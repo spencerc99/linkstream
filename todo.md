@@ -1,7 +1,10 @@
 - add filters to filter by domain, flag, etc.
-  - preset ones like "TV" (filter just youtube, tiktok, etc.)
+  - preset ones like "TV" (filter just youtube, tiktok, gifs, etc.)
+  - "reader" mode that filters out all the non-text content
+  - a "minimal/image" mode where it just shows the favicons falling? and physics??? bouncing around
+- need way to categorize links by type, some based on their content-type others based on the domain, kind of url.
 - figure out wayback machine integration if needed
 - figure out persistence strategy (if there is one)
-- a "minimal" mode where it just shows the favicons falling? and physics??? bouncing around
 - some more involved way to interact with histogram
 - figure out interaction method for waiting for frames to load before moving on? how to make the conveyor belt a little slower when the firehose is so fast. introduce some delay.
+- a fun remote control like interface that is stickied on the screen that allows you to access all the different controls, play/pause, speed up / slow down, switch modes, etc.

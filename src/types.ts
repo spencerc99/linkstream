@@ -16,3 +16,13 @@ export interface ExternalEmbed {
   description?: string;
   thumb?: string;
 }
+
+export type VisualMode = "grid" | "focus" | "meteor";
+export type ContentFilter = "all" | "tv" | "radio" | "reader";
+
+export interface RemoteControlState {
+  visualMode: VisualMode;
+  contentFilter: ContentFilter;
+  isPaused: boolean;
+  speed: number;
+}

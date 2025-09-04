@@ -1,9 +1,16 @@
-import { useCallback, useState } from "react";
-import { LinkPost, ExternalEmbed } from "./types";
+import { useCallback, useState, useMemo } from "react";
+import { LinkPost, ExternalEmbed, RemoteControlState } from "./types";
 import { useJetStream } from "./hooks/useJetStream";
 import { DomainHistogram } from "./components/DomainHistogram";
 import { LinkPreview } from "./components/LinkPreview";
+import { RemoteControl } from "./components/RemoteControl";
+import { MeteorShower } from "./components/MeteorShower";
+import { FocusMode } from "./components/FocusMode";
+import { shouldShowLink } from "./utils/contentClassification";
 import dayjs from "dayjs";
+import relativeTime from "dayjs/plugin/relativeTime";
+
+dayjs.extend(relativeTime);
 
 const DEFAULT_HISTORY_SIZE = 18;
 
@@ -125,8 +132,13 @@ function transformUrl(url: string): string {
 export function StreamView() {
   const [links, setLinks] = useState<LinkPost[]>([]);
   const [isConnected, setIsConnected] = useState(false);
-  const [isPaused, setIsPaused] = useState(false);
   const [domainCounts, setDomainCounts] = useState<DomainCounts>({});
+  const [remoteState, setRemoteState] = useState<RemoteControlState>({
+    visualMode: "grid",
+    contentFilter: "all",
+    isPaused: false,
+    speed: 1,
+  });
 
   const addNewLink = useCallback((external: ExternalEmbed, message: any) => {
     setLinks((prevLinks) => {
@@ -155,7 +167,7 @@ export function StreamView() {
 
   const handleMessage = useCallback(
     (message: any) => {
-      if (isPaused) {
+      if (remoteState.isPaused) {
         console.log("Paused, skipping message");
         return;
       }
@@ -171,7 +183,7 @@ export function StreamView() {
         addNewLink(message.commit.record.embed.external, message);
       }
     },
-    [addNewLink, isPaused]
+    [addNewLink, remoteState.isPaused]
   );
 
   useJetStream({
@@ -180,51 +192,213 @@ export function StreamView() {
     onConnectionChange: setIsConnected,
   });
 
-  return (
-    <div style={{ display: "flex", gap: "2em" }}>
-      <div style={{ flex: 1 }}>
-        <div
-          style={{
-            display: "flex",
-            gap: ".5em",
-            marginBottom: "1em",
-            alignItems: "center",
-          }}
-        >
-          <button onClick={() => setIsPaused((prev) => !prev)}>
-            {isPaused ? "Resume" : "Pause"}
-          </button>
-          <div>{isConnected ? "Connected" : "Disconnecting..."}</div>
-        </div>
-        <div
-          className="stream-container"
-          style={{
-            display: "flex",
-            flexDirection: "row",
-            flexWrap: "wrap",
-            gap: "1em",
-          }}
-        >
-          {links.map((link) => (
-            <LinkView key={link.postId} link={link} />
-          ))}
-        </div>
-      </div>
+  // Filter links based on content filter
+  const filteredLinks = useMemo(() => {
+    return links.filter((link) =>
+      shouldShowLink(link.url, remoteState.contentFilter)
+    );
+  }, [links, remoteState.contentFilter]);
 
-      <DomainHistogram domainCounts={domainCounts} />
-    </div>
+  // Handle remote control state changes
+  const handleRemoteStateChange = useCallback(
+    (newState: Partial<RemoteControlState>) => {
+      setRemoteState((prev) => ({ ...prev, ...newState }));
+    },
+    []
+  );
+
+  // Render different visual modes
+  const renderContent = () => {
+    if (remoteState.visualMode === "meteor") {
+      return (
+        <div style={{ display: "flex", gap: "2em" }}>
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                display: "flex",
+                gap: ".5em",
+                marginBottom: "1em",
+                alignItems: "center",
+              }}
+            >
+              <div>{isConnected ? "Connected" : "Disconnecting..."}</div>
+            </div>
+            <MeteorShower
+              links={filteredLinks}
+              speed={remoteState.speed}
+              isPaused={remoteState.isPaused}
+            />
+          </div>
+          <DomainHistogram domainCounts={domainCounts} />
+        </div>
+      );
+    }
+
+    if (remoteState.visualMode === "focus") {
+      return (
+        <div style={{ display: "flex", gap: "2em" }}>
+          <div style={{ flex: 1 }}>
+            <div
+              style={{
+                display: "flex",
+                gap: ".5em",
+                marginBottom: "1em",
+                alignItems: "center",
+              }}
+            >
+              <div>{isConnected ? "Connected" : "Disconnecting..."}</div>
+            </div>
+            <FocusMode
+              links={filteredLinks}
+              speed={remoteState.speed}
+              isPaused={remoteState.isPaused}
+            />
+          </div>
+          <DomainHistogram domainCounts={domainCounts} />
+        </div>
+      );
+    }
+
+    // Default grid mode
+    return (
+      <div style={{ display: "flex", gap: "2em" }}>
+        <div style={{ flex: 1 }}>
+          <div
+            style={{
+              display: "flex",
+              gap: ".5em",
+              marginBottom: "1em",
+              alignItems: "center",
+            }}
+          >
+            <div>{isConnected ? "Connected" : "Disconnecting..."}</div>
+          </div>
+          <div
+            className="stream-container"
+            style={{
+              display: "flex",
+              flexDirection: "row",
+              flexWrap: "wrap",
+              gap: "1em",
+            }}
+          >
+            {filteredLinks.map((link) => (
+              <LinkView key={link.postId} link={link} />
+            ))}
+          </div>
+        </div>
+        <DomainHistogram domainCounts={domainCounts} />
+      </div>
+    );
+  };
+
+  return (
+    <>
+      {renderContent()}
+
+      <RemoteControl
+        state={remoteState}
+        onStateChange={handleRemoteStateChange}
+      />
+    </>
   );
 }
 
 export function LinkView({ link }: { link: LinkPost }) {
+  const domain = new URL(link.url).hostname.replace(/^www\./, "");
+  const favicon = `https://www.google.com/s2/favicons?domain=${domain}&sz=16`;
+  const bskyUrl = `https://bsky.app/profile/${link.postAuthor}/post/${link.postId}`;
+  const postedTime = dayjs(link.timestamp / 1000).format("h:mm A"); // Convert microseconds to milliseconds, format as time
+
+  // Truncate title if too long
+  const displayTitle =
+    link.title && link.title.length > 50
+      ? `${link.title.substring(0, 50)}...`
+      : link.title || domain;
+
   return (
-    <div style={{}}>
+    <div style={{ display: "flex", flexDirection: "column" }}>
       <LinkPreview link={link} transformedUrl={transformUrl(link.url)} />
-      <p>{dayjs(link.timestamp).format("hh:mm:ss a")}</p>
-      {/* Hidden until clicked to expand */}
-      <div className="detailInfo" style={{ display: "none" }}>
-        <a href={link.url}>{link.title}</a>
-        <p>({link.description})</p>
+
+      {/* Polished metadata bar */}
+      <div
+        style={{
+          width: "480px",
+          padding: "12px 16px",
+          backgroundColor: "#f8f9fa",
+          borderRadius: "0 0 8px 8px",
+          border: "1px solid #e9ecef",
+          borderTop: "none",
+          display: "flex",
+          alignItems: "center",
+          gap: "12px",
+          fontSize: "14px",
+        }}
+      >
+        {/* Favicon */}
+        <img
+          src={favicon}
+          alt={`${domain} favicon`}
+          style={{
+            width: "16px",
+            height: "16px",
+            borderRadius: "2px",
+            flexShrink: 0,
+          }}
+          onError={(e) => {
+            // Fallback to a default icon if favicon fails to load
+            (e.target as HTMLImageElement).src =
+              "data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMTYiIGhlaWdodD0iMTYiIHZpZXdCb3g9IjAgMCAxNiAxNiIgZmlsbD0ibm9uZSIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj4KPHJlY3Qgd2lkdGg9IjE2IiBoZWlnaHQ9IjE2IiBmaWxsPSIjNjY2NjY2Ii8+CjxwYXRoIGQ9Ik04IDRMMTIgOEw4IDEyTDQgOEw4IDRaIiBmaWxsPSJ3aGl0ZSIvPgo8L3N2Zz4K";
+          }}
+        />
+
+        {/* Title */}
+        <span
+          style={{
+            flex: 1,
+            fontWeight: "500",
+            color: "#333",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+          title={link.title || domain} // Show full title on hover
+        >
+          {displayTitle}
+        </span>
+
+        {/* BlueSky link */}
+        <a
+          href={bskyUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            textDecoration: "none",
+            color: "#0066cc",
+            fontSize: "16px",
+            flexShrink: 0,
+          }}
+          title="View original BlueSky post"
+        >
+          <img
+            src="/bluesky.svg"
+            alt="BlueSky"
+            style={{ width: "16px", height: "16px" }}
+          />
+        </a>
+
+        {/* Posted time */}
+        <span
+          style={{
+            color: "#666",
+            fontSize: "12px",
+            flexShrink: 0,
+          }}
+        >
+          {postedTime}
+        </span>
       </div>
     </div>
   );
