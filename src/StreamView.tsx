@@ -1,6 +1,8 @@
 import { useCallback, useState } from "react";
 import { LinkPost, ExternalEmbed } from "./types";
 import { useJetStream } from "./hooks/useJetStream";
+import { DomainHistogram } from "./components/DomainHistogram";
+import { LinkPreview } from "./components/LinkPreview";
 import dayjs from "dayjs";
 
 const DEFAULT_HISTORY_SIZE = 18;
@@ -23,7 +25,6 @@ const URL_TRANSFORMERS: Record<string, (url: string) => string> = {
       ? `https://www.youtube.com/embed/${videoId}?autoplay=1`
       : url;
   },
-  "www.youtube.com": (url: string) => URL_TRANSFORMERS["youtube.com"](url),
   "youtu.be": (url: string) => URL_TRANSFORMERS["youtube.com"](url),
   "x.com": (url: string) => {
     // Extract tweet ID from URLs like x.com/username/status/123456
@@ -41,13 +42,80 @@ const URL_TRANSFORMERS: Record<string, (url: string) => string> = {
     const path = new URL(url).pathname;
     return `https://open.spotify.com/embed${path}`;
   },
+  "tiktok.com": (url: string) => {
+    const videoId = url.match(/video\/(\d+)/)?.[1];
+    return videoId ? `https://www.tiktok.com/embed/v/${videoId}` : url;
+  },
+  "instagram.com": (url: string) => {
+    const postId = url.match(/p\/(\d+)/)?.[1];
+    return postId ? `https://www.instagram.com/p/${postId}/embed` : url;
+  },
+  "facebook.com": (url: string) => {
+    const postId = url.match(/p\/(\d+)/)?.[1];
+    return postId
+      ? `https://www.facebook.com/plugins/post.php?href=${encodeURIComponent(
+          url
+        )}`
+      : url;
+  },
+  "linkedin.com": (url: string) => {
+    const postId = url.match(/p\/(\d+)/)?.[1];
+    return postId
+      ? `https://www.linkedin.com/embed/feed/update/urn:li:share:${postId}`
+      : url;
+  },
+  "reddit.com": (url: string) => {
+    const postId = url.match(/r\/(\w+)\/comments\/(\w+)/)?.[2];
+    return postId ? `https://www.reddit.com/embed/comments/${postId}` : url;
+  },
+  "github.com": (url: string) => {
+    const repo = url.match(/github\.com\/([^/]+)\/([^/]+)/)?.[2];
+    return repo ? `https://github.com/${repo}/embed` : url;
+  },
+  "gitlab.com": (url: string) => {
+    const repo = url.match(/gitlab\.com\/([^/]+)\/([^/]+)/)?.[2];
+    return repo ? `https://gitlab.com/${repo}/embed` : url;
+  },
+  "stackoverflow.com": (url: string) => {
+    const questionId = url.match(/questions\/(\d+)/)?.[1];
+    return questionId
+      ? `https://stackoverflow.com/questions/${questionId}/embed`
+      : url;
+  },
+  // "medium.com": (url: string) => {
+  //   const postId = url.match(/@([^/]+)\/([^/]+)/)?.[2];
+  //   return postId ? `https://medium.com/embed/${postId}` : url;
+  // },
+  // "substack.com": (url: string) => {
+  //   const postId = url.match(/@([^/]+)\/([^/]+)/)?.[2];
+  //   return postId ? `https://substack.com/embed/${postId}` : url;
+  // },
+  "dev.to": (url: string) => {
+    const postId = url.match(/dev\.to\/([^/]+)\/([^/]+)/)?.[2];
+    return postId ? `https://dev.to/embed/${postId}` : url;
+  },
+  "threads.net": (url: string) => {
+    const postId = url.match(/threads\.net\/([^/]+)\/([^/]+)/)?.[2];
+    return postId ? `https://threads.net/embed/${postId}` : url;
+  },
 };
+
+// Helper function to normalize hostnames (remove www. prefix)
+// This ensures that domains like "www.example.com" and "example.com" are treated as the same domain
+// for counting and grouping purposes
+function normalizeHostname(hostname: string): string {
+  return hostname.replace(/^www\./, "");
+}
 
 // Helper function to transform URLs
 function transformUrl(url: string): string {
   try {
-    const domain = new URL(url).hostname;
-    const transformer = URL_TRANSFORMERS[domain];
+    const hostname = new URL(url).hostname;
+    const normalizedDomain = normalizeHostname(hostname);
+
+    // Try to find transformer by normalized domain first, then by original hostname
+    const transformer =
+      URL_TRANSFORMERS[normalizedDomain] || URL_TRANSFORMERS[hostname];
     return transformer ? transformer(url) : url;
   } catch {
     return url;
@@ -73,11 +141,12 @@ export function StreamView() {
         // Thumb isnt useful unless we do an extra call https://github.com/bluesky-social/atproto/discussions/1311#discussioncomment-6420935
       };
 
-      // Update domain counts
-      const domain = new URL(external.uri).hostname;
+      // Update domain counts with normalized hostname
+      const hostname = new URL(external.uri).hostname;
+      const normalizedDomain = normalizeHostname(hostname);
       setDomainCounts((prev) => ({
         ...prev,
-        [domain]: (prev[domain] || 0) + 1,
+        [normalizedDomain]: (prev[normalizedDomain] || 0) + 1,
       }));
 
       return [newLink, ...prevLinks].slice(0, DEFAULT_HISTORY_SIZE);
@@ -142,36 +211,7 @@ export function StreamView() {
         </div>
       </div>
 
-      {/* New Domain Histogram */}
-      <div
-        style={{
-          width: "200px",
-          padding: "1em",
-          borderLeft: "1px solid #ccc",
-        }}
-      >
-        <h3>Domain Statistics</h3>
-        {Object.entries(domainCounts)
-          .sort(([, a], [, b]) => b - a) // Sort by count descending
-          .map(([domain, count]) => (
-            <div key={domain} style={{ marginBottom: "0.5em" }}>
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <span>{domain}</span>
-                <span>{count}</span>
-              </div>
-              <div
-                style={{
-                  width: `${
-                    (count / Math.max(...Object.values(domainCounts))) * 100
-                  }%`,
-                  height: "4px",
-                  backgroundColor: "#0066cc",
-                  borderRadius: "2px",
-                }}
-              />
-            </div>
-          ))}
-      </div>
+      <DomainHistogram domainCounts={domainCounts} />
     </div>
   );
 }
@@ -179,7 +219,7 @@ export function StreamView() {
 export function LinkView({ link }: { link: LinkPost }) {
   return (
     <div style={{}}>
-      <iframe src={transformUrl(link.url)} />
+      <LinkPreview link={link} transformedUrl={transformUrl(link.url)} />
       <p>{dayjs(link.timestamp).format("hh:mm:ss a")}</p>
       {/* Hidden until clicked to expand */}
       <div className="detailInfo" style={{ display: "none" }}>

@@ -1,0 +1,7 @@
+- add filters to filter by domain, flag, etc.
+  - preset ones like "TV" (filter just youtube, tiktok, etc.)
+- figure out wayback machine integration if needed
+- figure out persistence strategy (if there is one)
+- a "minimal" mode where it just shows the favicons falling? and physics??? bouncing around
+- some more involved way to interact with histogram
+- figure out interaction method for waiting for frames to load before moving on? how to make the conveyor belt a little slower when the firehose is so fast. introduce some delay.
