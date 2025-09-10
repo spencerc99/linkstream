@@ -245,6 +245,9 @@ export function DomainHistogram({ domainCounts }: DomainHistogramProps) {
                   fontWeight: "500",
                   fontSize: "0.9em",
                   color: "#333",
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
                   flex: 1,
                 }}
               >
