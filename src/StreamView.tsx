@@ -1,4 +1,4 @@
-import { useCallback, useState, useMemo } from "react";
+import { useCallback, useState, useMemo, useRef, useEffect } from "react";
 import { LinkPost, ExternalEmbed, RemoteControlState } from "./types";
 import { useJetStream } from "./hooks/useJetStream";
 import { DomainHistogram } from "./components/DomainHistogram";
@@ -140,6 +140,10 @@ export function StreamView() {
     speed: 1,
   });
 
+  // Queue for throttling incoming messages
+  const messageQueueRef = useRef<any[]>([]);
+  const processingTimeoutRef = useRef<NodeJS.Timeout>();
+
   const addNewLink = useCallback((external: ExternalEmbed, message: any) => {
     setLinks((prevLinks) => {
       const newLink: LinkPost = {
@@ -165,26 +169,79 @@ export function StreamView() {
     });
   }, []);
 
-  const handleMessage = useCallback(
-    (message: any) => {
-      if (remoteState.isPaused) {
-        console.log("Paused, skipping message");
-        return;
-      }
-      if (message.commit?.record?.embed?.external) {
+  // Process queued messages with throttling
+  const processMessageQueue = useCallback(() => {
+    if (messageQueueRef.current.length > 0 && !remoteState.isPaused) {
+      const message = messageQueueRef.current.shift();
+
+      if (message?.commit?.record?.embed?.external) {
         // skip if it is a bsky link
         if (
           message.commit.record.embed.external.uri.startsWith(
             "https://bsky.social"
           )
         ) {
+          // Still schedule next processing even if we skip this message
+          const delay = remoteState.speed < 1 ? 1000 / remoteState.speed : 0;
+          processingTimeoutRef.current = setTimeout(processMessageQueue, delay);
           return;
         }
         addNewLink(message.commit.record.embed.external, message);
       }
+
+      // Schedule next message processing if there are more messages
+      if (messageQueueRef.current.length > 0) {
+        const delay = remoteState.speed < 1 ? 1000 / remoteState.speed : 0;
+        processingTimeoutRef.current = setTimeout(processMessageQueue, delay);
+      } else {
+        // No more messages, clear the timeout reference
+        processingTimeoutRef.current = undefined;
+      }
+    } else {
+      // Paused or no messages, clear the timeout reference
+      processingTimeoutRef.current = undefined;
+    }
+  }, [addNewLink, remoteState.isPaused, remoteState.speed]);
+
+  // Handle raw messages from firehose - just add to queue
+  const handleMessage = useCallback(
+    (message: any) => {
+      if (message.commit?.record?.embed?.external) {
+        messageQueueRef.current.push(message);
+
+        // If we're not currently processing, start processing immediately
+        if (!processingTimeoutRef.current && !remoteState.isPaused) {
+          processingTimeoutRef.current = setTimeout(processMessageQueue, 0);
+        }
+      }
     },
-    [addNewLink, remoteState.isPaused]
+    [processMessageQueue, remoteState.isPaused]
   );
+
+  // Clean up timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (processingTimeoutRef.current) {
+        clearTimeout(processingTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Handle pause/resume and speed changes
+  useEffect(() => {
+    if (
+      !remoteState.isPaused &&
+      messageQueueRef.current.length > 0 &&
+      !processingTimeoutRef.current
+    ) {
+      // Resume processing
+      processingTimeoutRef.current = setTimeout(processMessageQueue, 0);
+    } else if (remoteState.isPaused && processingTimeoutRef.current) {
+      // Pause processing
+      clearTimeout(processingTimeoutRef.current);
+      processingTimeoutRef.current = undefined;
+    }
+  }, [remoteState.isPaused, processMessageQueue]);
 
   useJetStream({
     wantedCollections: ["app.bsky.feed.post"],
@@ -225,7 +282,7 @@ export function StreamView() {
             </div>
             <MeteorShower
               links={filteredLinks}
-              speed={remoteState.speed}
+              speed={1}
               isPaused={remoteState.isPaused}
             />
           </div>
@@ -250,7 +307,7 @@ export function StreamView() {
             </div>
             <FocusMode
               links={filteredLinks}
-              speed={remoteState.speed}
+              speed={1}
               isPaused={remoteState.isPaused}
             />
           </div>

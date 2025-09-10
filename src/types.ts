@@ -18,7 +18,7 @@ export interface ExternalEmbed {
 }
 
 export type VisualMode = "grid" | "focus" | "meteor";
-export type ContentFilter = "all" | "tv" | "radio" | "reader";
+export type ContentFilter = "all" | "tv" | "radio" | "flipbook";
 
 export interface RemoteControlState {
   visualMode: VisualMode;

@@ -34,11 +34,11 @@ export function RemoteControl({ state, onStateChange }: RemoteControlProps) {
     all: { icon: "◉", label: "ALL" },
     tv: { icon: "▣", label: "TV" },
     radio: { icon: "◐", label: "RADIO" },
-    reader: { icon: "◘", label: "READ" },
+    flipbook: { icon: "◘", label: "FLIPBOOK" },
   };
 
   const handleSpeedUp = () => {
-    const newSpeed = Math.min(3, state.speed + 0.25);
+    const newSpeed = Math.min(1, state.speed + 0.25);
     onStateChange({ speed: newSpeed });
   };
 
@@ -140,71 +140,74 @@ export function RemoteControl({ state, onStateChange }: RemoteControlProps) {
 
       {/* Content Filter Buttons Row */}
       <div style={{ display: "flex", gap: "10px" }}>
-        {(["all", "tv", "radio", "reader"] as ContentFilter[]).map((filter) => {
-          const config = contentFilterConfig[filter];
-          const isActive = state.contentFilter === filter;
+        {(["all", "tv", "radio", "flipbook"] as ContentFilter[]).map(
+          (filter) => {
+            const config = contentFilterConfig[filter];
+            const isActive = state.contentFilter === filter;
 
-          return (
-            <div
-              key={filter}
-              style={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                gap: "4px",
-              }}
-            >
-              <button
-                onClick={() => handleContentFilterChange(filter)}
-                style={{
-                  width: "42px",
-                  height: "42px",
-                  borderRadius: "6px",
-                  border: "none",
-                  background: isActive
-                    ? "linear-gradient(145deg, #555, #333)"
-                    : "linear-gradient(145deg, #4a4a4a, #3a3a3a)",
-                  color: isActive ? "#4a9eff" : "#ccc",
-                  cursor: "pointer",
-                  fontSize: "16px",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  transition: "all 0.1s ease",
-                  boxShadow: isActive
-                    ? "inset 0 3px 6px rgba(0,0,0,0.4), inset 0 -2px 4px rgba(255,255,255,0.05)"
-                    : "0 3px 6px rgba(0,0,0,0.4), inset 0 1px 2px rgba(255,255,255,0.1)",
-                  transform: isActive ? "translateY(2px)" : "translateY(0)",
-                }}
-                onMouseDown={(e) => {
-                  (e.target as HTMLElement).style.transform = "translateY(3px)";
-                }}
-                onMouseUp={(e) => {
-                  (e.target as HTMLElement).style.transform = isActive
-                    ? "translateY(2px)"
-                    : "translateY(0)";
-                }}
-                onMouseLeave={(e) => {
-                  (e.target as HTMLElement).style.transform = isActive
-                    ? "translateY(2px)"
-                    : "translateY(0)";
-                }}
-              >
-                {config.icon}
-              </button>
+            return (
               <div
+                key={filter}
                 style={{
-                  color: isActive ? "#4a9eff" : "#999",
-                  fontSize: "10px",
-                  fontWeight: "bold",
-                  letterSpacing: "0.5px",
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  gap: "4px",
                 }}
               >
-                {config.label}
+                <button
+                  onClick={() => handleContentFilterChange(filter)}
+                  style={{
+                    width: "42px",
+                    height: "42px",
+                    borderRadius: "6px",
+                    border: "none",
+                    background: isActive
+                      ? "linear-gradient(145deg, #555, #333)"
+                      : "linear-gradient(145deg, #4a4a4a, #3a3a3a)",
+                    color: isActive ? "#4a9eff" : "#ccc",
+                    cursor: "pointer",
+                    fontSize: "16px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    transition: "all 0.1s ease",
+                    boxShadow: isActive
+                      ? "inset 0 3px 6px rgba(0,0,0,0.4), inset 0 -2px 4px rgba(255,255,255,0.05)"
+                      : "0 3px 6px rgba(0,0,0,0.4), inset 0 1px 2px rgba(255,255,255,0.1)",
+                    transform: isActive ? "translateY(2px)" : "translateY(0)",
+                  }}
+                  onMouseDown={(e) => {
+                    (e.target as HTMLElement).style.transform =
+                      "translateY(3px)";
+                  }}
+                  onMouseUp={(e) => {
+                    (e.target as HTMLElement).style.transform = isActive
+                      ? "translateY(2px)"
+                      : "translateY(0)";
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.target as HTMLElement).style.transform = isActive
+                      ? "translateY(2px)"
+                      : "translateY(0)";
+                  }}
+                >
+                  {config.icon}
+                </button>
+                <div
+                  style={{
+                    color: isActive ? "#4a9eff" : "#999",
+                    fontSize: "10px",
+                    fontWeight: "bold",
+                    letterSpacing: "0.5px",
+                  }}
+                >
+                  {config.label}
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          }
+        )}
       </div>
 
       {/* Control Buttons Row */}
@@ -288,18 +291,18 @@ export function RemoteControl({ state, onStateChange }: RemoteControlProps) {
         {/* Speed Up Button */}
         <button
           onClick={handleSpeedUp}
-          disabled={state.speed >= 3}
+          disabled={state.speed >= 1}
           style={{
             width: "40px",
             height: "40px",
             borderRadius: "6px",
             border: "none",
             background:
-              state.speed >= 3
+              state.speed >= 1
                 ? "linear-gradient(145deg, #2a2a2a, #1a1a1a)"
                 : "linear-gradient(145deg, #4a4a4a, #3a3a3a)",
-            color: state.speed >= 3 ? "#555" : "#ccc",
-            cursor: state.speed >= 3 ? "not-allowed" : "pointer",
+            color: state.speed >= 1 ? "#555" : "#ccc",
+            cursor: state.speed >= 1 ? "not-allowed" : "pointer",
             fontSize: "16px",
             display: "flex",
             alignItems: "center",
@@ -309,7 +312,7 @@ export function RemoteControl({ state, onStateChange }: RemoteControlProps) {
               "0 3px 6px rgba(0,0,0,0.4), inset 0 1px 2px rgba(255,255,255,0.1)",
           }}
           onMouseDown={(e) => {
-            if (state.speed < 3) {
+            if (state.speed < 1) {
               (e.target as HTMLElement).style.transform = "translateY(2px)";
             }
           }}

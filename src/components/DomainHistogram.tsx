@@ -186,6 +186,8 @@ export function DomainHistogram({ domainCounts }: DomainHistogramProps) {
         borderLeft: "1px solid #ccc",
         backgroundColor: "#f8f9fa",
         borderRadius: "8px 0 0 8px",
+        maxHeight: "100vh",
+        overflowY: "auto",
       }}
     >
       <h3
