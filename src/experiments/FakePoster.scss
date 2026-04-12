@@ -342,32 +342,80 @@
             gap: 0;
             margin-top: 8px;
             justify-content: space-between;
-            max-width: 400px;
+            max-width: 460px;
 
             .action {
               display: flex;
               align-items: center;
-              gap: 4px;
+              gap: 6px;
               font-size: 13px;
               color: #71767b;
               cursor: pointer;
               padding: 4px 8px;
               border-radius: 20px;
-              transition: all 0.2s;
+              transition:
+                color 0.2s,
+                background 0.2s;
+              position: relative;
+
+              svg {
+                transition: transform 0.2s;
+              }
 
               &.replies:hover {
                 color: #1d9bf0;
+                background: rgba(29, 155, 240, 0.1);
               }
               &.retweets:hover {
                 color: #00ba7c;
+                background: rgba(0, 186, 124, 0.1);
               }
               &.likes:hover {
                 color: #f91880;
+                background: rgba(249, 24, 128, 0.1);
+                svg {
+                  transform: scale(1.1);
+                }
               }
               &.views:hover {
                 color: #1d9bf0;
+                background: rgba(29, 155, 240, 0.1);
+              }
+              &.bookmarks:hover {
+                color: #1d9bf0;
+                background: rgba(29, 155, 240, 0.1);
               }
             }
+          }
+
+          .animated-count {
+            position: relative;
+            display: inline-block;
+            font-variant-numeric: tabular-nums;
+
+            .count-value {
+              display: inline-block;
+              animation: countPulse 0.4s ease-out;
+            }
+
+            .count-floater {
+              position: absolute;
+              left: 50%;
+              top: -2px;
+              font-size: 11px;
+              font-weight: 700;
+              color: #1d9bf0;
+              pointer-events: none;
+              animation: floaterRise 0.9s ease-out forwards;
+              white-space: nowrap;
+            }
+          }
+
+          .action.likes .count-floater {
+            color: #f91880;
+          }
+          .action.retweets .count-floater {
+            color: #00ba7c;
           }
 
           .tweet-comments {
@@ -438,6 +486,11 @@
               font-size: 13px;
               padding: 8px 0;
               cursor: pointer;
+              background: none;
+              border: none;
+              text-align: left;
+              display: block;
+              width: 100%;
 
               &:hover {
                 text-decoration: underline;
@@ -523,7 +576,26 @@
           font-size: 18px;
           flex-shrink: 0;
           width: 28px;
-          text-align: center;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+
+          .notif-icon-svg {
+            &.like {
+              color: #f91880;
+              fill: #f91880;
+              stroke: #f91880;
+            }
+            &.retweet {
+              color: #00ba7c;
+            }
+            &.reply {
+              color: #1d9bf0;
+            }
+            &.follow {
+              color: #8b98a5;
+            }
+          }
         }
 
         .notif-content {
@@ -571,5 +643,34 @@
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+@keyframes countPulse {
+  0% {
+    transform: translateY(0) scale(1);
+    color: inherit;
+  }
+  35% {
+    transform: translateY(-2px) scale(1.18);
+    color: #fff;
+  }
+  100% {
+    transform: translateY(0) scale(1);
+    color: inherit;
+  }
+}
+
+@keyframes floaterRise {
+  0% {
+    transform: translate(-50%, 0);
+    opacity: 0;
+  }
+  20% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-50%, -22px);
+    opacity: 0;
   }
 }

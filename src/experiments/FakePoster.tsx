@@ -8,6 +8,19 @@ import {
   generateHaikuComments,
   HAIKU_WORKER_URL,
 } from "./haikuComments";
+import {
+  ReplyIcon,
+  RetweetIcon,
+  HeartIcon,
+  ChartIcon,
+  BookmarkIcon,
+  HomeIcon,
+  BellIcon,
+  UserIcon,
+  UserPlusIcon,
+  CloseIcon,
+  BackIcon,
+} from "./icons";
 import "./FakePoster.scss";
 
 dayjs.extend(relativeTime);
@@ -78,6 +91,8 @@ interface Tweet {
   views: number;
   comments: TweetComment[];
   bookmarks: number;
+  // LLM-generated comments for this specific tweet (so they don't mix with other tweets' queues)
+  privatePool: PendingComment[];
 }
 
 interface Notification {
@@ -126,6 +141,41 @@ function isUsablePost(data: any): SourcePost | null {
   return { text, did, rkey };
 }
 
+function AnimatedCount({ value }: { value: number }) {
+  const prev = useRef(value);
+  const [floaters, setFloaters] = useState<{ id: number; delta: number }[]>([]);
+  const pulseKey = useRef(0);
+
+  useEffect(() => {
+    if (value > prev.current) {
+      const delta = value - prev.current;
+      pulseKey.current += 1;
+      // Only show +N floater for meaningful jumps
+      if (delta > 0) {
+        const id = Date.now() + Math.random();
+        setFloaters((f) => [...f, { id, delta }]);
+        setTimeout(() => {
+          setFloaters((f) => f.filter((x) => x.id !== id));
+        }, 900);
+      }
+    }
+    prev.current = value;
+  }, [value]);
+
+  return (
+    <span className="animated-count">
+      <span key={pulseKey.current} className="count-value">
+        {formatCount(value)}
+      </span>
+      {floaters.map((f) => (
+        <span key={f.id} className="count-floater">
+          +{f.delta}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 export function FakePoster() {
   const [tweets, setTweets] = useState<Tweet[]>([]);
   const [composerText, setComposerText] = useState("");
@@ -134,6 +184,16 @@ export function FakePoster() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [mode, setMode] = useState<CommentMode>(loadStoredMode);
   const [haikuError, setHaikuError] = useState<string | null>(null);
+  const [expandedTweets, setExpandedTweets] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = (tweetId: string) => {
+    setExpandedTweets((prev) => {
+      const next = new Set(prev);
+      if (next.has(tweetId)) next.delete(tweetId);
+      else next.add(tweetId);
+      return next;
+    });
+  };
   const commentQueue = useRef<PendingComment[]>([]);
   const engagementTimers = useRef<Map<string, number>>(new Map());
   const modeRef = useRef(mode);
@@ -194,20 +254,27 @@ export function FakePoster() {
           const newBookmarks = Math.random() < 0.1 * decay ? 1 : 0;
 
           let newComment: TweetComment | null = null;
-          if (
-            commentQueue.current.length > 0 &&
-            Math.random() < 0.25 * decay
-          ) {
-            const pending = commentQueue.current.shift()!;
-            newComment = {
-              id: `comment-${Date.now()}-${Math.random()}`,
-              user: randomUser(),
-              text: pending.text,
-              timestamp: Date.now(),
-              likes: Math.floor(Math.random() * 10),
-              sourceDid: pending.did,
-              sourceRkey: pending.rkey,
-            };
+          let newPrivatePool = tweet.privatePool;
+          if (Math.random() < 0.25 * decay) {
+            // Prefer this tweet's own LLM-generated pool, fall back to shared firehose queue
+            let pending: PendingComment | undefined;
+            if (tweet.privatePool.length > 0) {
+              pending = tweet.privatePool[0];
+              newPrivatePool = tweet.privatePool.slice(1);
+            } else if (commentQueue.current.length > 0) {
+              pending = commentQueue.current.shift();
+            }
+            if (pending) {
+              newComment = {
+                id: `comment-${Date.now()}-${Math.random()}`,
+                user: randomUser(),
+                text: pending.text,
+                timestamp: Date.now(),
+                likes: Math.floor(Math.random() * 10),
+                sourceDid: pending.did,
+                sourceRkey: pending.rkey,
+              };
+            }
           }
 
           // Generate notifications for some engagement events
@@ -282,6 +349,7 @@ export function FakePoster() {
             comments: newComment
               ? [...tweet.comments, newComment]
               : tweet.comments,
+            privatePool: newPrivatePool,
           };
         });
       });
@@ -293,8 +361,9 @@ export function FakePoster() {
   const handlePost = async () => {
     if (!composerText.trim()) return;
     const postText = composerText.trim();
+    const tweetId = `tweet-${Date.now()}`;
     const newTweet: Tweet = {
-      id: `tweet-${Date.now()}`,
+      id: tweetId,
       text: postText,
       timestamp: Date.now(),
       likes: 0,
@@ -303,6 +372,7 @@ export function FakePoster() {
       views: 0,
       comments: [],
       bookmarks: 0,
+      privatePool: [],
     };
     setTweets((prev) => [newTweet, ...prev]);
     engagementTimers.current.set(newTweet.id, 0);
@@ -320,14 +390,30 @@ export function FakePoster() {
         );
         return;
       }
-      commentQueue.current.push(
-        ...comments.map((text) => ({ text, source: "haiku" as const }))
+      const pending = comments.map((text) => ({
+        text,
+        source: "haiku" as const,
+      }));
+      setTweets((prev) =>
+        prev.map((t) =>
+          t.id === tweetId
+            ? { ...t, privatePool: [...t.privatePool, ...pending] }
+            : t
+        )
       );
     } else if (activeMode === "local") {
       if (localLLM.status !== "ready") return;
       const comments = await localLLM.generate(postText, 20);
-      commentQueue.current.push(
-        ...comments.map((text) => ({ text, source: "local" as const }))
+      const pending = comments.map((text) => ({
+        text,
+        source: "local" as const,
+      }));
+      setTweets((prev) =>
+        prev.map((t) =>
+          t.id === tweetId
+            ? { ...t, privatePool: [...t.privatePool, ...pending] }
+            : t
+        )
       );
     }
   };
@@ -351,41 +437,42 @@ export function FakePoster() {
   const notificationIcon = (type: string) => {
     switch (type) {
       case "like":
-        return "\u2764\uFE0F";
+        return <HeartIcon size={18} className="notif-icon-svg like" />;
       case "retweet":
-        return "\uD83D\uDD04";
+        return <RetweetIcon size={18} className="notif-icon-svg retweet" />;
       case "reply":
-        return "\uD83D\uDCAC";
+        return <ReplyIcon size={18} className="notif-icon-svg reply" />;
       case "follow":
-        return "\uD83D\uDC64";
+        return <UserPlusIcon size={18} className="notif-icon-svg follow" />;
       default:
-        return "\uD83D\uDD14";
+        return <BellIcon size={18} className="notif-icon-svg" />;
     }
   };
 
   return (
     <div className="fake-poster">
       <nav className="poster-sidebar">
-        <Link to="/HAH" className="nav-item back">
-          &larr;
+        <Link to="/HAH" className="nav-item back" aria-label="Back to HAH">
+          <BackIcon />
         </Link>
         <div className="nav-logo">{"𝕏"}</div>
-        <div className="nav-item active">
-          <span className="nav-icon">{"🏠"}</span>
+        <div className="nav-item active" aria-label="Home">
+          <HomeIcon />
         </div>
         <div
           className="nav-item notification-nav"
           onClick={handleOpenNotifications}
+          aria-label="Notifications"
         >
-          <span className="nav-icon">{"🔔"}</span>
+          <BellIcon />
           {unreadCount > 0 && (
             <span className="nav-badge">
               {unreadCount > 99 ? "99+" : unreadCount}
             </span>
           )}
         </div>
-        <div className="nav-item">
-          <span className="nav-icon">{"👤"}</span>
+        <div className="nav-item" aria-label="Profile">
+          <UserIcon />
         </div>
       </nav>
 
@@ -482,8 +569,10 @@ export function FakePoster() {
                 placeholder="What is happening?!"
                 rows={3}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
                     handlePost();
+                  }
                 }}
               />
               <div className="composer-actions">
@@ -523,22 +612,35 @@ export function FakePoster() {
                   <p className="tweet-text">{tweet.text}</p>
                   <div className="tweet-actions">
                     <span className="action replies">
-                      {"💬"} {formatCount(tweet.replies)}
+                      <ReplyIcon size={16} />
+                      <AnimatedCount value={tweet.replies} />
                     </span>
                     <span className="action retweets">
-                      {"🔁"} {formatCount(tweet.retweets)}
+                      <RetweetIcon size={16} />
+                      <AnimatedCount value={tweet.retweets} />
                     </span>
                     <span className="action likes">
-                      {"❤️"} {formatCount(tweet.likes)}
+                      <HeartIcon size={16} />
+                      <AnimatedCount value={tweet.likes} />
                     </span>
                     <span className="action views">
-                      {"📊"} {formatCount(tweet.views)}
+                      <ChartIcon size={16} />
+                      <AnimatedCount value={tweet.views} />
+                    </span>
+                    <span className="action bookmarks">
+                      <BookmarkIcon size={16} />
+                      {tweet.bookmarks > 0 && (
+                        <AnimatedCount value={tweet.bookmarks} />
+                      )}
                     </span>
                   </div>
 
                   {tweet.comments.length > 0 && (
                     <div className="tweet-comments">
-                      {tweet.comments.slice(-5).map((comment) => (
+                      {(expandedTweets.has(tweet.id)
+                        ? tweet.comments
+                        : tweet.comments.slice(-5)
+                      ).map((comment) => (
                         <div key={comment.id} className="comment">
                           <div
                             className="comment-avatar"
@@ -571,9 +673,14 @@ export function FakePoster() {
                         </div>
                       ))}
                       {tweet.comments.length > 5 && (
-                        <div className="more-comments">
-                          Show {tweet.comments.length - 5} more replies
-                        </div>
+                        <button
+                          className="more-comments"
+                          onClick={() => toggleExpanded(tweet.id)}
+                        >
+                          {expandedTweets.has(tweet.id)
+                            ? "Show less"
+                            : `Show ${tweet.comments.length - 5} more replies`}
+                        </button>
                       )}
                     </div>
                   )}
@@ -592,8 +699,9 @@ export function FakePoster() {
           <button
             className="notif-close"
             onClick={() => setShowNotifications(false)}
+            aria-label="Close notifications"
           >
-            {"✕"}
+            <CloseIcon size={18} />
           </button>
         </div>
         <div className="notif-list">
