@@ -10,7 +10,8 @@ export interface BskyProfile {
 
 const BSKY_APPVIEW = "https://public.api.bsky.app";
 const BATCH_SIZE = 25;
-const BATCH_INTERVAL_MS = 600;
+const BATCH_INTERVAL_MS = 200;
+const MAX_CONCURRENT_BATCHES = 3;
 
 type Subscriber = () => void;
 
@@ -20,6 +21,7 @@ class ProfileResolver {
   private queue: string[] = [];
   private subscribers = new Set<Subscriber>();
   private tickerStarted = false;
+  private inFlight = 0;
 
   subscribe(fn: Subscriber): () => void {
     this.subscribers.add(fn);
@@ -33,13 +35,22 @@ class ProfileResolver {
   private startTicker() {
     if (this.tickerStarted) return;
     this.tickerStarted = true;
-    setInterval(() => void this.flush(), BATCH_INTERVAL_MS);
+    setInterval(() => {
+      // Kick off up to MAX_CONCURRENT_BATCHES if queue is long enough
+      while (
+        this.inFlight < MAX_CONCURRENT_BATCHES &&
+        this.queue.length > 0
+      ) {
+        void this.flush();
+      }
+    }, BATCH_INTERVAL_MS);
   }
 
   private async flush() {
     if (this.queue.length === 0) return;
     const batch = this.queue.splice(0, BATCH_SIZE);
     batch.forEach((d) => this.pending.delete(d));
+    this.inFlight += 1;
     try {
       const params = batch
         .map((d) => `actors=${encodeURIComponent(d)}`)
@@ -79,7 +90,16 @@ class ProfileResolver {
       this.notify();
     } catch (e) {
       console.error("profile resolver batch failed", e);
+    } finally {
+      this.inFlight -= 1;
     }
+  }
+
+  // Allow callers to pre-populate the cache (e.g. from searchPosts responses
+  // that return already-hydrated author info).
+  hydrate(profile: BskyProfile): void {
+    this.cache.set(profile.did, profile);
+    this.notify();
   }
 
   // Returns profile or null if unresolvable or undefined if still pending.

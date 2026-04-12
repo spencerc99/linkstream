@@ -265,7 +265,7 @@ export function FakeMessages() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [friendsConvos, accountsConvos, groupsConvos, mode]);
 
-  // ---- Delivery ticker: drains pendingQueue at a variable rate ----------
+  // ---- Delivery ticker: drains pendingQueue at a mode-dependent rate ----
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout>;
     const tick = () => {
@@ -273,7 +273,10 @@ export function FakeMessages() {
         const msg = pendingQueue.current.shift()!;
         deliverMessage(msg);
       }
-      timeout = setTimeout(tick, 300 + Math.random() * 500);
+      const m = modeRef.current;
+      const base = m === "friends" ? 300 : 120;
+      const jitter = m === "friends" ? 500 : 200;
+      timeout = setTimeout(tick, base + Math.random() * jitter);
     };
     tick();
     return () => clearTimeout(timeout);
@@ -488,8 +491,16 @@ export function FakeMessages() {
   const handleFirehose = useCallback(
     (data: any) => {
       const now = Date.now();
-      // Higher throughput in groups mode so conversations can develop
-      const minGap = modeRef.current === "groups" ? 150 : 400;
+      // Per-mode intake throttle:
+      // - Friends: slow cadence preserves cozy pacing
+      // - Accounts: near-unthrottled so the sidebar fills fast
+      // - Groups: medium so threads have room to accumulate replies
+      const minGap =
+        modeRef.current === "friends"
+          ? 400
+          : modeRef.current === "accounts"
+            ? 60
+            : 150;
       if (now - lastFirehoseAt.current < minGap) return;
 
       switch (modeRef.current) {
