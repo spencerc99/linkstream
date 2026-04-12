@@ -8,3 +8,6 @@
 - some more involved way to interact with histogram
 - figure out interaction method for waiting for frames to load before moving on? how to make the conveyor belt a little slower when the firehose is so fast. introduce some delay.
 - a fun remote control like interface that is stickied on the screen that allows you to access all the different controls, play/pause, speed up / slow down, switch modes, etc.
+
+- https://github.com/gnuns/allorigins use this as fallback for the failing iframes
+- self-host it? should also allow getting headers because we need to handle short link redirects

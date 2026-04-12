@@ -94,29 +94,8 @@ const URL_TRANSFORMERS: Record<string, (url: string) => string> = {
   },
   "clips.twitch.tv": (url: string) => URL_TRANSFORMERS["twitch.tv"](url),
   "instagram.com": (url: string) => {
-    // TODO: this doesn't work on some newer reels?
-    try {
-      const urlObj = new URL(url);
-      const pathname = urlObj.pathname;
-
-      // Handle regular posts: /p/POST_ID/
-      const postMatch = pathname.match(/\/p\/([^/]+)/);
-      if (postMatch) {
-        const postId = postMatch[1];
-        return `https://www.instagram.com/p/${postId}/embed/?cr=1&v=14&wp=480&hp=320`;
-      }
-
-      // Handle reels: /reel/POST_ID/
-      const reelMatch = pathname.match(/\/reel\/([^/]+)/);
-      if (reelMatch) {
-        const postId = reelMatch[1];
-        return `https://www.instagram.com/reel/${postId}/embed/?cr=1&v=14&wp=480&hp=320`;
-      }
-
-      return url;
-    } catch {
-      return url;
-    }
+    // Mark Instagram URLs for special embed.js handling in LinkPreview
+    return `INSTAGRAM_PLAYER:${url}`;
   },
   "facebook.com": (url: string) => {
     const postId = url.match(/p\/(\d+)/)?.[1];
