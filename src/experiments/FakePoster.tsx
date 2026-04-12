@@ -3,9 +3,32 @@ import { useJetStream } from "../hooks/useJetStream";
 import { Link } from "react-router-dom";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
+import { useLocalLLM } from "./useLocalLLM";
+import {
+  generateHaikuComments,
+  HAIKU_WORKER_URL,
+} from "./haikuComments";
 import "./FakePoster.scss";
 
 dayjs.extend(relativeTime);
+
+type CommentMode = "firehose" | "haiku" | "local";
+
+interface PendingComment {
+  text: string;
+  source: CommentMode;
+  did?: string;
+  rkey?: string;
+}
+
+const MODE_STORAGE_KEY = "hah.poster.mode";
+
+function loadStoredMode(): CommentMode {
+  if (typeof localStorage === "undefined") return "firehose";
+  const raw = localStorage.getItem(MODE_STORAGE_KEY);
+  if (raw === "haiku" || raw === "local" || raw === "firehose") return raw;
+  return "firehose";
+}
 
 const FAKE_USERS = [
   { name: "Maya Chen", handle: "mayac" },
@@ -109,14 +132,33 @@ export function FakePoster() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-  const commentQueue = useRef<SourcePost[]>([]);
+  const [mode, setMode] = useState<CommentMode>(loadStoredMode);
+  const [haikuError, setHaikuError] = useState<string | null>(null);
+  const commentQueue = useRef<PendingComment[]>([]);
   const engagementTimers = useRef<Map<string, number>>(new Map());
+  const modeRef = useRef(mode);
+  const localLLM = useLocalLLM();
 
-  // Buffer firehose posts for use as comments
+  useEffect(() => {
+    modeRef.current = mode;
+    try {
+      localStorage.setItem(MODE_STORAGE_KEY, mode);
+    } catch {
+      // ignore storage errors
+    }
+  }, [mode]);
+
+  // Buffer firehose posts (only when firehose mode is active)
   const handleFirehose = useCallback((data: any) => {
+    if (modeRef.current !== "firehose") return;
     const post = isUsablePost(data);
     if (post) {
-      commentQueue.current.push(post);
+      commentQueue.current.push({
+        text: post.text,
+        source: "firehose",
+        did: post.did,
+        rkey: post.rkey,
+      });
       if (commentQueue.current.length > 100) {
         commentQueue.current = commentQueue.current.slice(-50);
       }
@@ -156,15 +198,15 @@ export function FakePoster() {
             commentQueue.current.length > 0 &&
             Math.random() < 0.25 * decay
           ) {
-            const source = commentQueue.current.shift()!;
+            const pending = commentQueue.current.shift()!;
             newComment = {
               id: `comment-${Date.now()}-${Math.random()}`,
               user: randomUser(),
-              text: source.text,
+              text: pending.text,
               timestamp: Date.now(),
               likes: Math.floor(Math.random() * 10),
-              sourceDid: source.did,
-              sourceRkey: source.rkey,
+              sourceDid: pending.did,
+              sourceRkey: pending.rkey,
             };
           }
 
@@ -248,11 +290,12 @@ export function FakePoster() {
     return () => clearInterval(interval);
   }, []);
 
-  const handlePost = () => {
+  const handlePost = async () => {
     if (!composerText.trim()) return;
+    const postText = composerText.trim();
     const newTweet: Tweet = {
       id: `tweet-${Date.now()}`,
-      text: composerText.trim(),
+      text: postText,
       timestamp: Date.now(),
       likes: 0,
       retweets: 0,
@@ -264,6 +307,38 @@ export function FakePoster() {
     setTweets((prev) => [newTweet, ...prev]);
     engagementTimers.current.set(newTweet.id, 0);
     setComposerText("");
+    setHaikuError(null);
+
+    const activeMode = modeRef.current;
+    if (activeMode === "haiku") {
+      const comments = await generateHaikuComments(postText, 25);
+      if (comments.length === 0) {
+        setHaikuError(
+          HAIKU_WORKER_URL
+            ? "Haiku returned no comments (check Worker logs)"
+            : "VITE_HAIKU_WORKER_URL is not set"
+        );
+        return;
+      }
+      commentQueue.current.push(
+        ...comments.map((text) => ({ text, source: "haiku" as const }))
+      );
+    } else if (activeMode === "local") {
+      if (localLLM.status !== "ready") return;
+      const comments = await localLLM.generate(postText, 20);
+      commentQueue.current.push(
+        ...comments.map((text) => ({ text, source: "local" as const }))
+      );
+    }
+  };
+
+  const handleModeChange = (next: CommentMode) => {
+    setMode(next);
+    commentQueue.current = [];
+    setHaikuError(null);
+    if (next === "local" && localLLM.status === "idle") {
+      void localLLM.load();
+    }
   };
 
   const handleOpenNotifications = () => {
@@ -317,7 +392,85 @@ export function FakePoster() {
       <main className="poster-main">
         <div className="poster-header">
           <h2>Home</h2>
+          <div className="mode-switcher" role="tablist" aria-label="Comment source">
+            <button
+              role="tab"
+              aria-selected={mode === "firehose"}
+              className={`mode-tab ${mode === "firehose" ? "active" : ""}`}
+              onClick={() => handleModeChange("firehose")}
+              title="Comments sourced from the live Bluesky firehose"
+            >
+              Firehose
+            </button>
+            <button
+              role="tab"
+              aria-selected={mode === "haiku"}
+              className={`mode-tab ${mode === "haiku" ? "active" : ""}`}
+              onClick={() => handleModeChange("haiku")}
+              disabled={!HAIKU_WORKER_URL}
+              title={
+                HAIKU_WORKER_URL
+                  ? "Comments generated by Claude Haiku"
+                  : "Set VITE_HAIKU_WORKER_URL to enable"
+              }
+            >
+              Haiku
+            </button>
+            <button
+              role="tab"
+              aria-selected={mode === "local"}
+              className={`mode-tab ${mode === "local" ? "active" : ""}`}
+              onClick={() => handleModeChange("local")}
+              disabled={localLLM.status === "unsupported"}
+              title={
+                localLLM.status === "unsupported"
+                  ? "WebGPU unavailable in this browser"
+                  : "Comments generated by a local in-browser model"
+              }
+            >
+              Local
+            </button>
+          </div>
         </div>
+
+        {mode === "local" && localLLM.status === "loading" && (
+          <div className="mode-status loading">
+            Loading local model…{" "}
+            {Math.round(localLLM.progress * 100)}%
+            <div className="mode-progress">
+              <div
+                className="mode-progress-bar"
+                style={{ width: `${localLLM.progress * 100}%` }}
+              />
+            </div>
+            <div className="mode-status-detail">{localLLM.progressText}</div>
+          </div>
+        )}
+        {mode === "local" && localLLM.status === "idle" && (
+          <div className="mode-status">
+            Click "Local" again to start downloading the model (~800MB, cached
+            after).
+          </div>
+        )}
+        {mode === "local" && localLLM.status === "error" && (
+          <div className="mode-status error">
+            Local model failed to load: {localLLM.error}
+          </div>
+        )}
+        {mode === "local" && localLLM.status === "unsupported" && (
+          <div className="mode-status error">
+            This browser doesn't support WebGPU. Try Chrome or Edge.
+          </div>
+        )}
+        {mode === "haiku" && !HAIKU_WORKER_URL && (
+          <div className="mode-status error">
+            Set <code>VITE_HAIKU_WORKER_URL</code> in <code>.env.local</code>{" "}
+            after deploying the worker.
+          </div>
+        )}
+        {mode === "haiku" && haikuError && (
+          <div className="mode-status error">{haikuError}</div>
+        )}
 
         <div className="poster-scroll">
           <div className="composer">

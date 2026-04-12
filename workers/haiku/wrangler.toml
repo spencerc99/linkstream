@@ -1,0 +1,10 @@
+name = "linkstream-haiku"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+
+[vars]
+# comma-separated list of allowed origins, or "*"
+ALLOWED_ORIGINS = "*"
+
+# Set via: bunx wrangler secret put ANTHROPIC_API_KEY
+# ANTHROPIC_API_KEY = set as secret
