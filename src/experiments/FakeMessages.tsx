@@ -186,6 +186,49 @@ const MAX_ACCOUNT_CONVOS = 40;
 const MAX_GROUP_CONVOS = 30;
 const MAX_MESSAGES_PER_CONVO = 120;
 
+const BSKY_APPVIEW = "https://public.api.bsky.app";
+
+// Session-scoped dedupe so we only backfill each thread once
+const backfilledThreads = new Set<string>();
+
+interface ThreadNode {
+  $type?: string;
+  post?: {
+    uri: string;
+    author: {
+      did: string;
+      handle: string;
+      displayName?: string;
+      avatar?: string;
+    };
+    record: { text?: string; createdAt?: string; langs?: string[] };
+  };
+  parent?: ThreadNode;
+  replies?: ThreadNode[];
+}
+
+function extractThreadPosts(node: ThreadNode | undefined): NonNullable<
+  ThreadNode["post"]
+>[] {
+  if (!node) return [];
+  // Skip "notFoundPost" or "blockedPost" nodes
+  if (node.$type && node.$type !== "app.bsky.feed.defs#threadViewPost") {
+    return [];
+  }
+  const out: NonNullable<ThreadNode["post"]>[] = [];
+  if (node.parent) out.push(...extractThreadPosts(node.parent));
+  if (node.post) out.push(node.post);
+  if (Array.isArray(node.replies)) {
+    for (const r of node.replies) out.push(...extractThreadPosts(r));
+  }
+  return out;
+}
+
+function rkeyFromUri(uri: string): string {
+  const parts = uri.split("/");
+  return parts[parts.length - 1] || "";
+}
+
 export function FakeMessages() {
   const [mode, setMode] = useState<MessagesMode>(loadStoredMode);
   const modeRef = useRef(mode);
@@ -419,6 +462,112 @@ export function FakeMessages() {
     });
   }, []);
 
+  const backfillThread = useCallback(async (rootUri: string) => {
+    if (backfilledThreads.has(rootUri)) return;
+    backfilledThreads.add(rootUri);
+
+    try {
+      const url =
+        `${BSKY_APPVIEW}/xrpc/app.bsky.feed.getPostThread` +
+        `?uri=${encodeURIComponent(rootUri)}&depth=10&parentHeight=0`;
+      const res = await fetch(url);
+      if (!res.ok) return;
+      const data = (await res.json()) as { thread?: ThreadNode };
+      const posts = extractThreadPosts(data.thread);
+      if (posts.length === 0) return;
+
+      // Seed profile cache with the hydrated authors from the thread response
+      for (const p of posts) {
+        profileResolver.hydrate({
+          did: p.author.did,
+          handle: p.author.handle,
+          displayName: p.author.displayName,
+          avatar: p.author.avatar,
+        });
+      }
+
+      const participants = new Set<string>(posts.map((p) => p.author.did));
+      // Only promote to a visible group chat if thread has ≥2 participants
+      if (participants.size < 2) return;
+
+      const messages: Message[] = posts
+        .map((p) => {
+          const text =
+            typeof p.record?.text === "string" ? p.record.text : "";
+          const filtered = baseTextFilter(text, !!p.record?.langs);
+          const finalText = filtered ?? text.trim();
+          if (!finalText) return null;
+          const ts = p.record?.createdAt
+            ? new Date(p.record.createdAt).getTime()
+            : Date.now();
+          return {
+            id: `thread-${p.uri}`,
+            text: finalText,
+            timestamp: ts,
+            fromContact: true,
+            sourceDid: p.author.did,
+            sourceRkey: rkeyFromUri(p.uri),
+            authorDid: p.author.did,
+            authorName: p.author.displayName || p.author.handle,
+            authorColor: colorForDid(p.author.did),
+          } as Message;
+        })
+        .filter((m): m is Message => m !== null)
+        .sort((a, b) => a.timestamp - b.timestamp);
+
+      setGroupsConvos((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(rootUri);
+
+        // Merge with any existing messages (dedup by id)
+        const seenIds = new Set((existing?.messages || []).map((m) => m.id));
+        const merged = [
+          ...(existing?.messages || []),
+          ...messages.filter((m) => !seenIds.has(m.id)),
+        ]
+          .sort((a, b) => a.timestamp - b.timestamp)
+          .slice(-MAX_MESSAGES_PER_CONVO);
+
+        const mergedParticipants = new Set<string>(
+          existing?.participants || []
+        );
+        for (const did of participants) mergedParticipants.add(did);
+
+        const names = namesForParticipants(mergedParticipants);
+
+        // LRU evict if over cap
+        if (!existing && next.size >= MAX_GROUP_CONVOS) {
+          let oldestId: string | null = null;
+          let oldestAt = Infinity;
+          for (const [k, v] of next) {
+            if (v.lastActivity < oldestAt) {
+              oldestAt = v.lastActivity;
+              oldestId = k;
+            }
+          }
+          if (oldestId) next.delete(oldestId);
+        }
+
+        next.set(rootUri, {
+          id: rootUri,
+          kind: "groups",
+          displayName: names.display,
+          subtitle: names.subtitle,
+          avatarColor: colorForDid(Array.from(mergedParticipants)[0]),
+          avatarInitial: names.display[0]?.toUpperCase() || "?",
+          participants: mergedParticipants,
+          messages: merged,
+          unreadCount: existing?.unreadCount || 0,
+          isTyping: false,
+          lastActivity: Date.now(),
+        });
+        return next;
+      });
+    } catch (e) {
+      console.error("thread backfill failed", e);
+    }
+  }, []);
+
   const handleGroupsFirehose = useCallback((data: any) => {
     const post = usableAnyPost(data);
     if (!post) return;
@@ -490,6 +639,17 @@ export function FakeMessages() {
 
   const handleFirehose = useCallback(
     (data: any) => {
+      // In Groups mode, trigger thread backfill on every reply we observe —
+      // regardless of intake throttle. Jetstream alone rarely gives us ≥2
+      // participants in the same thread during a session, so we grab the
+      // whole thread via getPostThread the first time we see its root.
+      if (modeRef.current === "groups") {
+        const replyRoot = data.commit?.record?.reply?.root?.uri;
+        if (typeof replyRoot === "string") {
+          void backfillThread(replyRoot);
+        }
+      }
+
       const now = Date.now();
       // Per-mode intake throttle:
       // - Friends: slow cadence preserves cozy pacing
@@ -516,7 +676,12 @@ export function FakeMessages() {
       }
       lastFirehoseAt.current = now;
     },
-    [handleFriendsFirehose, handleAccountsFirehose, handleGroupsFirehose]
+    [
+      handleFriendsFirehose,
+      handleAccountsFirehose,
+      handleGroupsFirehose,
+      backfillThread,
+    ]
   );
 
   useJetStream({
