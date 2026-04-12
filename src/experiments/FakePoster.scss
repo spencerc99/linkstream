@@ -323,6 +323,22 @@
                   font-size: 13px;
                 }
 
+                .comment-source {
+                  color: #536471;
+                  font-size: 12px;
+                  text-decoration: none;
+                  margin-left: 4px;
+                  opacity: 0.5;
+                  transition:
+                    color 0.15s,
+                    opacity 0.15s;
+
+                  &:hover {
+                    color: #1d9bf0;
+                    opacity: 1;
+                  }
+                }
+
                 .comment-text {
                   font-size: 14px;
                   margin-top: 2px;

@@ -28,6 +28,8 @@ interface Message {
   timestamp: number;
   fromContact: boolean;
   reaction?: string;
+  sourceDid?: string;
+  sourceRkey?: string;
 }
 
 interface Conversation {
@@ -37,25 +39,47 @@ interface Conversation {
   isTyping: boolean;
 }
 
-function isTextLikePost(data: any): string | null {
+interface IncomingPost {
+  text: string;
+  did: string;
+  rkey: string;
+}
+
+function isTextLikePost(data: any): IncomingPost | null {
   const record = data.commit?.record;
   if (!record?.text) return null;
   if (record.embed) return null;
   if (record.reply) return null;
 
-  const text = record.text as string;
+  // Language filter: if langs is declared, require English
+  if (Array.isArray(record.langs) && record.langs.length > 0) {
+    if (!record.langs.some((l: string) => l.toLowerCase().startsWith("en"))) {
+      return null;
+    }
+  }
+
+  let text = record.text as string;
+
+  // Strip hashtags to make it feel more like a text message
+  text = text.replace(/#\w+/g, "").replace(/\s+/g, " ").trim();
+
   if (text.length > 160 || text.length < 2) return null;
   if (text.startsWith("@") || text.startsWith("RT ")) return null;
   if (text.includes("http://") || text.includes("https://")) return null;
-  if ((text.match(/#/g) || []).length > 2) return null;
 
-  // At least 70% ASCII for English-like text
-  const asciiCount = text
-    .split("")
-    .filter((c) => c.charCodeAt(0) < 128).length;
-  if (asciiCount / text.length < 0.7) return null;
+  // Fallback ASCII check for posts that didn't declare a language
+  if (!record.langs) {
+    const asciiCount = text
+      .split("")
+      .filter((c) => c.charCodeAt(0) < 128).length;
+    if (asciiCount / text.length < 0.7) return null;
+  }
 
-  return text;
+  const did = data.did as string | undefined;
+  const rkey = data.commit?.rkey as string | undefined;
+  if (!did || !rkey) return null;
+
+  return { text, did, rkey };
 }
 
 export function FakeMessages() {
@@ -80,7 +104,13 @@ export function FakeMessages() {
   const [showTapback, setShowTapback] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const pendingMessages = useRef<
-    { contactId: number; text: string; timestamp: number }[]
+    {
+      contactId: number;
+      text: string;
+      timestamp: number;
+      did: string;
+      rkey: string;
+    }[]
   >([]);
   const lastMessageTime = useRef(0);
   const activeContactIdRef = useRef(activeContactId);
@@ -113,6 +143,8 @@ export function FakeMessages() {
               text: msg.text,
               timestamp: msg.timestamp,
               fromContact: true,
+              sourceDid: msg.did,
+              sourceRkey: msg.rkey,
             },
           ];
           if (msg.contactId !== activeContactIdRef.current) {
@@ -131,8 +163,8 @@ export function FakeMessages() {
     // Variable throttle: 2-6 seconds between messages
     if (now - lastMessageTime.current < 2000 + Math.random() * 4000) return;
 
-    const text = isTextLikePost(data);
-    if (!text) return;
+    const post = isTextLikePost(data);
+    if (!post) return;
 
     lastMessageTime.current = now;
 
@@ -150,8 +182,10 @@ export function FakeMessages() {
 
     pendingMessages.current.push({
       contactId: contact.id,
-      text,
+      text: post.text,
       timestamp: Date.now(),
+      did: post.did,
+      rkey: post.rkey,
     });
   }, []);
 
@@ -345,6 +379,18 @@ export function FakeMessages() {
                       <span className="message-reaction">{msg.reaction}</span>
                     )}
                   </div>
+                  {msg.fromContact && msg.sourceDid && msg.sourceRkey && (
+                    <a
+                      className="source-link"
+                      href={`https://bsky.app/profile/${msg.sourceDid}/post/${msg.sourceRkey}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title="View original post on Bluesky"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      ↗
+                    </a>
+                  )}
                   {showTapback === msg.id && (
                     <div className="tapback-menu">
                       {TAPBACK_REACTIONS.map((r) => (

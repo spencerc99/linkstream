@@ -41,6 +41,8 @@ interface TweetComment {
   text: string;
   timestamp: number;
   likes: number;
+  sourceDid?: string;
+  sourceRkey?: string;
 }
 
 interface Tweet {
@@ -63,22 +65,42 @@ interface Notification {
   timestamp: number;
 }
 
-function isUsablePost(data: any): string | null {
+interface SourcePost {
+  text: string;
+  did: string;
+  rkey: string;
+}
+
+function isUsablePost(data: any): SourcePost | null {
   const record = data.commit?.record;
   if (!record?.text) return null;
   if (record.embed) return null;
 
-  const text = record.text as string;
+  if (Array.isArray(record.langs) && record.langs.length > 0) {
+    if (!record.langs.some((l: string) => l.toLowerCase().startsWith("en"))) {
+      return null;
+    }
+  }
+
+  let text = record.text as string;
+  text = text.replace(/#\w+/g, "").replace(/\s+/g, " ").trim();
+
   if (text.length > 200 || text.length < 5) return null;
   if (text.startsWith("@") || text.startsWith("RT ")) return null;
   if (text.includes("http://") || text.includes("https://")) return null;
 
-  const asciiCount = text
-    .split("")
-    .filter((c) => c.charCodeAt(0) < 128).length;
-  if (asciiCount / text.length < 0.7) return null;
+  if (!record.langs) {
+    const asciiCount = text
+      .split("")
+      .filter((c) => c.charCodeAt(0) < 128).length;
+    if (asciiCount / text.length < 0.7) return null;
+  }
 
-  return text;
+  const did = data.did as string | undefined;
+  const rkey = data.commit?.rkey as string | undefined;
+  if (!did || !rkey) return null;
+
+  return { text, did, rkey };
 }
 
 export function FakePoster() {
@@ -87,14 +109,14 @@ export function FakePoster() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
-  const commentQueue = useRef<string[]>([]);
+  const commentQueue = useRef<SourcePost[]>([]);
   const engagementTimers = useRef<Map<string, number>>(new Map());
 
   // Buffer firehose posts for use as comments
   const handleFirehose = useCallback((data: any) => {
-    const text = isUsablePost(data);
-    if (text) {
-      commentQueue.current.push(text);
+    const post = isUsablePost(data);
+    if (post) {
+      commentQueue.current.push(post);
       if (commentQueue.current.length > 100) {
         commentQueue.current = commentQueue.current.slice(-50);
       }
@@ -134,13 +156,15 @@ export function FakePoster() {
             commentQueue.current.length > 0 &&
             Math.random() < 0.08 * decay
           ) {
-            const commentText = commentQueue.current.shift()!;
+            const source = commentQueue.current.shift()!;
             newComment = {
               id: `comment-${Date.now()}-${Math.random()}`,
               user: randomUser(),
-              text: commentText,
+              text: source.text,
               timestamp: Date.now(),
               likes: Math.floor(Math.random() * 10),
+              sourceDid: source.did,
+              sourceRkey: source.rkey,
             };
           }
 
@@ -378,6 +402,17 @@ export function FakePoster() {
                             <span className="comment-handle">
                               @{comment.user.handle}
                             </span>
+                            {comment.sourceDid && comment.sourceRkey && (
+                              <a
+                                className="comment-source"
+                                href={`https://bsky.app/profile/${comment.sourceDid}/post/${comment.sourceRkey}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                title="View original post on Bluesky"
+                              >
+                                ↗
+                              </a>
+                            )}
                             <p className="comment-text">{comment.text}</p>
                           </div>
                         </div>

@@ -212,6 +212,8 @@
         display: flex;
         position: relative;
         margin-bottom: 2px;
+        align-items: flex-end;
+        gap: 6px;
 
         &.incoming {
           justify-content: flex-start;
@@ -219,6 +221,27 @@
 
         &.outgoing {
           justify-content: flex-end;
+        }
+
+        &:hover .source-link {
+          opacity: 0.55;
+        }
+
+        .source-link {
+          font-size: 14px;
+          color: #8e8e93;
+          text-decoration: none;
+          padding: 2px 4px;
+          line-height: 1;
+          opacity: 0;
+          transition: opacity 0.15s, color 0.15s;
+          flex-shrink: 0;
+          align-self: center;
+
+          &:hover {
+            opacity: 1 !important;
+            color: #007aff;
+          }
         }
       }
 
