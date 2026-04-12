@@ -154,14 +154,14 @@ export function FakeMessages() {
           return next;
         });
       }
-    }, 1200 + Math.random() * 800);
+    }, 350 + Math.random() * 500);
     return () => clearInterval(interval);
   }, []);
 
   const handleFirehoseMessage = useCallback((data: any) => {
     const now = Date.now();
     // Variable throttle: 2-6 seconds between messages
-    if (now - lastMessageTime.current < 2000 + Math.random() * 4000) return;
+    if (now - lastMessageTime.current < 400 + Math.random() * 900) return;
 
     const post = isTextLikePost(data);
     if (!post) return;

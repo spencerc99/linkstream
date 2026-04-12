@@ -139,22 +139,22 @@ export function FakePoster() {
           engagementTimers.current.set(tweet.id, elapsed + 1);
 
           // Brief delay before engagement starts
-          if (elapsed < 2) return tweet;
+          if (elapsed < 1) return tweet;
 
-          const decay = Math.max(0.05, 1 / (1 + (elapsed - 2) * 0.015));
+          const decay = Math.max(0.2, 1 / (1 + (elapsed - 1) * 0.006));
 
           const newLikes =
-            Math.random() < 0.4 * decay
-              ? Math.ceil(Math.random() * 3)
+            Math.random() < 0.7 * decay
+              ? Math.ceil(Math.random() * 5)
               : 0;
-          const newRetweets = Math.random() < 0.15 * decay ? 1 : 0;
-          const newViews = Math.ceil(Math.random() * 80 * decay) + 5;
-          const newBookmarks = Math.random() < 0.05 * decay ? 1 : 0;
+          const newRetweets = Math.random() < 0.3 * decay ? 1 : 0;
+          const newViews = Math.ceil(Math.random() * 200 * decay) + 15;
+          const newBookmarks = Math.random() < 0.1 * decay ? 1 : 0;
 
           let newComment: TweetComment | null = null;
           if (
             commentQueue.current.length > 0 &&
-            Math.random() < 0.08 * decay
+            Math.random() < 0.25 * decay
           ) {
             const source = commentQueue.current.shift()!;
             newComment = {
@@ -243,7 +243,7 @@ export function FakePoster() {
           };
         });
       });
-    }, 500);
+    }, 220);
 
     return () => clearInterval(interval);
   }, []);
