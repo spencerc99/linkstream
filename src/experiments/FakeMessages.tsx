@@ -107,6 +107,10 @@ interface Conversation {
   unreadCount: number;
   isTyping: boolean;
   lastActivity: number;
+  // User has sent at least one message in this convo — never evict
+  userReplied?: boolean;
+  // Real replies the user has posted to Bluesky in this convo
+  realReplies?: number;
 }
 
 interface PendingDelivery {
@@ -244,6 +248,21 @@ function rkeyFromUri(uri: string): string {
   return parts[parts.length - 1] || "";
 }
 
+// LRU-evict from a conversation map, but never evict convos the user has
+// replied to. If all convos are protected, skip eviction (soft cap).
+function evictOldestUnlocked(map: Map<string, Conversation>): void {
+  let oldestId: string | null = null;
+  let oldestAt = Infinity;
+  for (const [k, v] of map) {
+    if (v.userReplied) continue;
+    if (v.lastActivity < oldestAt) {
+      oldestAt = v.lastActivity;
+      oldestId = k;
+    }
+  }
+  if (oldestId) map.delete(oldestId);
+}
+
 export function FakeMessages() {
   const [mode, setMode] = useState<MessagesMode>(loadStoredMode);
   const modeRef = useRef(mode);
@@ -289,7 +308,16 @@ export function FakeMessages() {
   const [postStatus, setPostStatus] = useState<
     { kind: "idle" } | { kind: "posting" } | { kind: "posted"; uri: string } | { kind: "error"; message: string }
   >({ kind: "idle" });
+  // Session score: real Bluesky replies posted.
+  const [replyTimestamps, setReplyTimestamps] = useState<number[]>([]);
+  const [_rateTick, setRateTick] = useState(0);
   const auth = useBskyAuth();
+
+  // Re-render every 5s so the rolling rate display stays fresh
+  useEffect(() => {
+    const id = setInterval(() => setRateTick((t) => t + 1), 5000);
+    return () => clearInterval(id);
+  }, []);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const pendingQueue = useRef<PendingDelivery[]>([]);
@@ -449,15 +477,7 @@ export function FakeMessages() {
       } else {
         // LRU evict if over cap
         if (next.size >= MAX_ACCOUNT_CONVOS) {
-          let oldestId: string | null = null;
-          let oldestAt = Infinity;
-          for (const [k, v] of next) {
-            if (v.lastActivity < oldestAt) {
-              oldestAt = v.lastActivity;
-              oldestId = k;
-            }
-          }
-          if (oldestId) next.delete(oldestId);
+          evictOldestUnlocked(next);
         }
         next.set(post.did, {
           id: post.did,
@@ -564,15 +584,7 @@ export function FakeMessages() {
 
         // LRU evict if over cap
         if (!existing && next.size >= MAX_GROUP_CONVOS) {
-          let oldestId: string | null = null;
-          let oldestAt = Infinity;
-          for (const [k, v] of next) {
-            if (v.lastActivity < oldestAt) {
-              oldestAt = v.lastActivity;
-              oldestId = k;
-            }
-          }
-          if (oldestId) next.delete(oldestId);
+          evictOldestUnlocked(next);
         }
 
         // The root post's CID is whichever backfilled post matches the root URI
@@ -635,15 +647,7 @@ export function FakeMessages() {
         // Only create a bucket if it's an original post (we may add repliers later)
         // or if it's a reply (we'll seed the thread from here)
         if (next.size >= MAX_GROUP_CONVOS) {
-          let oldestId: string | null = null;
-          let oldestAt = Infinity;
-          for (const [k, v] of next) {
-            if (v.lastActivity < oldestAt) {
-              oldestAt = v.lastActivity;
-              oldestId = k;
-            }
-          }
-          if (oldestId) next.delete(oldestId);
+          evictOldestUnlocked(next);
         }
         const participants = new Set<string>([post.did]);
         const names = namesForParticipants(participants);
@@ -859,7 +863,8 @@ export function FakeMessages() {
     if (!inputText.trim() || !currentActiveId) return;
     const text = inputText.trim();
 
-    // Local echo first — so the message appears in the UI immediately
+    // Local echo first — so the message appears in the UI immediately.
+    // Also mark the convo as userReplied so LRU won't evict it.
     setCurrentConvos((prev) => {
       const next = new Map(prev);
       const conv = next.get(currentActiveId);
@@ -876,6 +881,7 @@ export function FakeMessages() {
           },
         ],
         lastActivity: Date.now(),
+        userReplied: true,
       });
       return next;
     });
@@ -887,6 +893,17 @@ export function FakeMessages() {
       try {
         const uri = await postReply(text, replyTarget);
         setPostStatus({ kind: "posted", uri });
+        setReplyTimestamps((ts) => [...ts, Date.now()]);
+        setCurrentConvos((prev) => {
+          const next = new Map(prev);
+          const conv = next.get(currentActiveId);
+          if (!conv) return prev;
+          next.set(currentActiveId, {
+            ...conv,
+            realReplies: (conv.realReplies || 0) + 1,
+          });
+          return next;
+        });
         setTimeout(() => {
           setPostStatus((s) => (s.kind === "posted" ? { kind: "idle" } : s));
         }, 4000);
@@ -1036,6 +1053,34 @@ export function FakeMessages() {
             </button>
           )}
         </div>
+        {replyTimestamps.length > 0 &&
+          (() => {
+            const now = Date.now();
+            const last60 = replyTimestamps.filter((t) => now - t < 60_000)
+              .length;
+            const firstAt = replyTimestamps[0];
+            const elapsedMin = Math.max((now - firstAt) / 60_000, 1 / 60);
+            const avg = replyTimestamps.length / elapsedMin;
+            return (
+              <div className="score-bar" aria-live="polite">
+                <div className="score-main">
+                  <span className="score-value">
+                    {replyTimestamps.length}
+                  </span>
+                  <span className="score-label">
+                    {replyTimestamps.length === 1
+                      ? "real reply sent"
+                      : "real replies sent"}
+                  </span>
+                </div>
+                <div className="score-rate">
+                  <span className="rate-now">{last60}/min now</span>
+                  <span className="rate-divider">·</span>
+                  <span className="rate-avg">avg {avg.toFixed(1)}/min</span>
+                </div>
+              </div>
+            );
+          })()}
         <div className="mode-switcher" role="tablist">
           <button
             role="tab"

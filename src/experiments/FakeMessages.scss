@@ -150,6 +150,72 @@
       }
     }
 
+    .score-bar {
+      margin: 0 8px 8px;
+      padding: 10px 14px;
+      background: linear-gradient(135deg, #0a1f3f 0%, #001a40 100%);
+      color: #fff;
+      border-radius: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      gap: 12px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
+        monospace;
+      box-shadow:
+        inset 0 1px 0 rgba(255, 255, 255, 0.08),
+        0 1px 2px rgba(0, 0, 0, 0.2);
+
+      .score-main {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        min-width: 0;
+
+        .score-value {
+          font-size: 26px;
+          font-weight: 800;
+          letter-spacing: 1px;
+          font-variant-numeric: tabular-nums;
+          color: #ffd166;
+          text-shadow: 0 0 12px rgba(255, 209, 102, 0.35);
+        }
+
+        .score-label {
+          font-size: 10px;
+          text-transform: uppercase;
+          letter-spacing: 1.5px;
+          color: rgba(255, 255, 255, 0.65);
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+      }
+
+      .score-rate {
+        font-size: 10px;
+        text-align: right;
+        color: rgba(255, 255, 255, 0.55);
+        letter-spacing: 0.5px;
+        white-space: nowrap;
+        flex-shrink: 0;
+
+        .rate-now {
+          color: #4ee38a;
+          font-weight: 600;
+        }
+
+        .rate-divider {
+          margin: 0 4px;
+          color: rgba(255, 255, 255, 0.25);
+        }
+
+        .rate-avg {
+          font-weight: 500;
+        }
+      }
+    }
+
     .mode-switcher {
       display: flex;
       gap: 2px;
