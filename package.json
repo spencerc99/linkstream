@@ -10,6 +10,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@atproto/api": "^0.19.8",
+    "@atproto/oauth-client-browser": "^0.3.41",
     "@mlc-ai/web-llm": "^0.2.82",
     "dayjs": "^1.11.13",
     "react": "^18.2.0",

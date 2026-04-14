@@ -3,6 +3,8 @@ import { useJetStream } from "../hooks/useJetStream";
 import { Link } from "react-router-dom";
 import dayjs from "dayjs";
 import { profileResolver } from "./profileResolver";
+import { useBskyAuth } from "./useBskyAuth";
+import { postReply, type ReplyTarget } from "./bskyAuth";
 import "./FakeMessages.scss";
 
 type MessagesMode = "friends" | "accounts" | "groups";
@@ -80,6 +82,8 @@ interface Message {
   reaction?: string;
   sourceDid?: string;
   sourceRkey?: string;
+  sourceCid?: string;
+  sourceUri?: string;
   // For group chats: which participant authored this message
   authorDid?: string;
   authorName?: string;
@@ -96,6 +100,9 @@ interface Conversation {
   avatarUrl?: string;
   // For groups: participant DIDs
   participants?: Set<string>;
+  // For groups: root post URI + CID, needed to construct real replies
+  rootUri?: string;
+  rootCid?: string;
   messages: Message[];
   unreadCount: number;
   isTyping: boolean;
@@ -109,6 +116,7 @@ interface PendingDelivery {
   timestamp: number;
   did: string;
   rkey: string;
+  cid?: string;
   // For groups
   authorDid?: string;
 }
@@ -131,6 +139,7 @@ function usableNonReplyPost(data: any): {
   text: string;
   did: string;
   rkey: string;
+  cid?: string;
 } | null {
   const record = data.commit?.record;
   if (!record?.text) return null;
@@ -147,15 +156,18 @@ function usableNonReplyPost(data: any): {
 
   const did = data.did as string | undefined;
   const rkey = data.commit?.rkey as string | undefined;
+  const cid = data.commit?.cid as string | undefined;
   if (!did || !rkey) return null;
-  return { text, did, rkey };
+  return { text, did, rkey, cid };
 }
 
 function usableAnyPost(data: any): {
   text: string;
   did: string;
   rkey: string;
+  cid?: string;
   replyRootUri?: string;
+  replyRootCid?: string;
 } | null {
   const record = data.commit?.record;
   if (!record?.text) return null;
@@ -171,9 +183,11 @@ function usableAnyPost(data: any): {
 
   const did = data.did as string | undefined;
   const rkey = data.commit?.rkey as string | undefined;
+  const cid = data.commit?.cid as string | undefined;
   if (!did || !rkey) return null;
   const replyRootUri = record.reply?.root?.uri as string | undefined;
-  return { text, did, rkey, replyRootUri };
+  const replyRootCid = record.reply?.root?.cid as string | undefined;
+  return { text, did, rkey, cid, replyRootUri, replyRootCid };
 }
 
 function postUri(did: string, rkey: string): string {
@@ -195,6 +209,7 @@ interface ThreadNode {
   $type?: string;
   post?: {
     uri: string;
+    cid: string;
     author: {
       did: string;
       handle: string;
@@ -269,6 +284,12 @@ export function FakeMessages() {
 
   const [inputText, setInputText] = useState("");
   const [showTapback, setShowTapback] = useState<string | null>(null);
+  const [signInOpen, setSignInOpen] = useState(false);
+  const [signInHandle, setSignInHandle] = useState("");
+  const [postStatus, setPostStatus] = useState<
+    { kind: "idle" } | { kind: "posting" } | { kind: "posted"; uri: string } | { kind: "error"; message: string }
+  >({ kind: "idle" });
+  const auth = useBskyAuth();
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const pendingQueue = useRef<PendingDelivery[]>([]);
@@ -357,6 +378,8 @@ export function FakeMessages() {
           fromContact: true,
           sourceDid: p.did,
           sourceRkey: p.rkey,
+          sourceCid: p.cid,
+          sourceUri: postUri(p.did, p.rkey),
           authorDid: p.authorDid,
           authorName,
           authorColor,
@@ -397,6 +420,7 @@ export function FakeMessages() {
       timestamp: Date.now(),
       did: post.did,
       rkey: post.rkey,
+      cid: post.cid,
     });
   }, []);
 
@@ -459,6 +483,7 @@ export function FakeMessages() {
       timestamp: Date.now(),
       did: post.did,
       rkey: post.rkey,
+      cid: post.cid,
     });
   }, []);
 
@@ -507,6 +532,8 @@ export function FakeMessages() {
             fromContact: true,
             sourceDid: p.author.did,
             sourceRkey: rkeyFromUri(p.uri),
+            sourceCid: p.cid,
+            sourceUri: p.uri,
             authorDid: p.author.did,
             authorName: p.author.displayName || p.author.handle,
             authorColor: colorForDid(p.author.did),
@@ -548,6 +575,10 @@ export function FakeMessages() {
           if (oldestId) next.delete(oldestId);
         }
 
+        // The root post's CID is whichever backfilled post matches the root URI
+        const rootPost = posts.find((p) => p.uri === rootUri);
+        const rootCid = rootPost?.cid || existing?.rootCid;
+
         next.set(rootUri, {
           id: rootUri,
           kind: "groups",
@@ -556,6 +587,8 @@ export function FakeMessages() {
           avatarColor: colorForDid(Array.from(mergedParticipants)[0]),
           avatarInitial: names.display[0]?.toUpperCase() || "?",
           participants: mergedParticipants,
+          rootUri,
+          rootCid,
           messages: merged,
           unreadCount: existing?.unreadCount || 0,
           isTyping: false,
@@ -573,6 +606,9 @@ export function FakeMessages() {
     if (!post) return;
     // Root URI: replies use reply.root.uri; originals use their own uri
     const rootUri = post.replyRootUri || postUri(post.did, post.rkey);
+    // For originals, the root CID is this post's CID; for replies it's the
+    // reply.root.cid from the record (always present on valid replies)
+    const rootCid = post.replyRootCid || post.cid;
 
     profileResolver.get(post.did);
 
@@ -591,6 +627,8 @@ export function FakeMessages() {
           subtitle: names.subtitle,
           avatarColor: colorForDid(Array.from(participants)[0]),
           avatarInitial: names.display[0]?.toUpperCase() || "?",
+          rootUri,
+          rootCid: existing.rootCid || rootCid,
           isTyping: true,
         });
       } else {
@@ -617,6 +655,8 @@ export function FakeMessages() {
           avatarColor: colorForDid(post.did),
           avatarInitial: names.display[0]?.toUpperCase() || "?",
           participants,
+          rootUri,
+          rootCid,
           messages: [],
           unreadCount: 0,
           isTyping: true,
@@ -633,6 +673,7 @@ export function FakeMessages() {
       timestamp: Date.now(),
       did: post.did,
       rkey: post.rkey,
+      cid: post.cid,
       authorDid: post.did,
     });
   }, []);
@@ -781,8 +822,44 @@ export function FakeMessages() {
 
   // ---- User actions ----------------------------------------------------
 
-  const handleSend = () => {
+  // Find the most recent incoming message in the active conversation — this is
+  // the target we reply to if the user is signed in on Bluesky.
+  function getReplyTarget(): ReplyTarget | null {
+    if (!activeConversation) return null;
+    const lastIncoming = [...activeConversation.messages]
+      .reverse()
+      .find((m) => m.fromContact);
+    if (!lastIncoming?.sourceDid || !lastIncoming.sourceRkey) return null;
+    if (!lastIncoming.sourceCid) return null;
+    const parentUri =
+      lastIncoming.sourceUri ||
+      postUri(lastIncoming.sourceDid, lastIncoming.sourceRkey);
+    // For groups mode, the root is the thread root. For others, root = parent.
+    const rootUri =
+      activeConversation.rootUri && activeConversation.rootCid
+        ? activeConversation.rootUri
+        : parentUri;
+    const rootCid =
+      activeConversation.rootUri && activeConversation.rootCid
+        ? activeConversation.rootCid
+        : lastIncoming.sourceCid;
+    return {
+      rootUri,
+      rootCid,
+      parentUri,
+      parentCid: lastIncoming.sourceCid,
+    };
+  }
+
+  const replyTarget = getReplyTarget();
+  const canPostToBluesky =
+    auth.state.status === "signed-in" && replyTarget !== null;
+
+  const handleSend = async () => {
     if (!inputText.trim() || !currentActiveId) return;
+    const text = inputText.trim();
+
+    // Local echo first — so the message appears in the UI immediately
     setCurrentConvos((prev) => {
       const next = new Map(prev);
       const conv = next.get(currentActiveId);
@@ -793,7 +870,7 @@ export function FakeMessages() {
           ...conv.messages,
           {
             id: `user-${Date.now()}`,
-            text: inputText.trim(),
+            text,
             timestamp: Date.now(),
             fromContact: false,
           },
@@ -803,6 +880,36 @@ export function FakeMessages() {
       return next;
     });
     setInputText("");
+
+    // If signed in and we have a reply target, actually post to Bluesky
+    if (canPostToBluesky && replyTarget) {
+      setPostStatus({ kind: "posting" });
+      try {
+        const uri = await postReply(text, replyTarget);
+        setPostStatus({ kind: "posted", uri });
+        setTimeout(() => {
+          setPostStatus((s) => (s.kind === "posted" ? { kind: "idle" } : s));
+        }, 4000);
+      } catch (e) {
+        setPostStatus({
+          kind: "error",
+          message: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  };
+
+  const handleSignIn = async (handle: string) => {
+    const h = handle.trim();
+    if (!h) return;
+    try {
+      await auth.signIn(h);
+    } catch (e) {
+      setPostStatus({
+        kind: "error",
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
   };
 
   const handleSelectConversation = (id: string) => {
@@ -875,6 +982,58 @@ export function FakeMessages() {
           <h1>Messages</h1>
           {totalUnread > 0 && (
             <span className="total-unread">{totalUnread}</span>
+          )}
+        </div>
+        <div className="auth-bar">
+          {auth.state.status === "signed-in" ? (
+            <>
+              <span className="auth-dot" aria-hidden />
+              <span className="auth-handle">
+                @{auth.state.handle || "signed in"}
+              </span>
+              <button
+                className="auth-action"
+                onClick={() => auth.signOut()}
+                type="button"
+              >
+                sign out
+              </button>
+            </>
+          ) : signInOpen ? (
+            <form
+              className="auth-signin-form"
+              onSubmit={(e) => {
+                e.preventDefault();
+                handleSignIn(signInHandle);
+              }}
+            >
+              <input
+                type="text"
+                value={signInHandle}
+                onChange={(e) => setSignInHandle(e.target.value)}
+                placeholder="yourhandle.bsky.social"
+                autoFocus
+              />
+              <button type="submit">→</button>
+              <button
+                type="button"
+                onClick={() => setSignInOpen(false)}
+                className="auth-cancel"
+              >
+                cancel
+              </button>
+            </form>
+          ) : (
+            <button
+              type="button"
+              className="auth-action primary"
+              onClick={() => setSignInOpen(true)}
+              disabled={auth.state.status === "loading"}
+            >
+              {auth.state.status === "loading"
+                ? "loading…"
+                : "sign in to reply on bluesky"}
+            </button>
           )}
         </div>
         <div className="mode-switcher" role="tablist">
@@ -1064,13 +1223,51 @@ export function FakeMessages() {
               <div ref={messagesEndRef} />
             </div>
 
+            {canPostToBluesky && replyTarget && (
+              <div className="reply-indicator">
+                <span className="reply-dot" />
+                your next send will post as a real reply to{" "}
+                <a
+                  href={replyTargetLink(replyTarget)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="reply-link"
+                >
+                  this post ↗
+                </a>
+              </div>
+            )}
+            {postStatus.kind === "posting" && (
+              <div className="post-status posting">posting to bluesky…</div>
+            )}
+            {postStatus.kind === "posted" && (
+              <div className="post-status posted">
+                posted.{" "}
+                <a
+                  href={bskyAppUrlFromUri(postStatus.uri)}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  view on bluesky ↗
+                </a>
+              </div>
+            )}
+            {postStatus.kind === "error" && (
+              <div className="post-status error">
+                failed to post: {postStatus.message}
+              </div>
+            )}
             <div className="message-input-area">
               <input
                 type="text"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                placeholder={placeholder}
+                placeholder={
+                  canPostToBluesky
+                    ? "reply to this post..."
+                    : placeholder
+                }
                 className="message-input"
               />
               <button
@@ -1097,6 +1294,17 @@ export function FakeMessages() {
 }
 
 // ---- Small helpers --------------------------------------------------------
+
+function bskyAppUrlFromUri(uri: string): string {
+  // at://did:plc:xyz/app.bsky.feed.post/abc -> https://bsky.app/profile/did:plc:xyz/post/abc
+  const match = uri.match(/^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/);
+  if (!match) return uri;
+  return `https://bsky.app/profile/${match[1]}/post/${match[2]}`;
+}
+
+function replyTargetLink(r: ReplyTarget): string {
+  return bskyAppUrlFromUri(r.parentUri);
+}
 
 function shortDid(did: string): string {
   // did:plc:xxxxx → xxxxx…

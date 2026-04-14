@@ -1,0 +1,14 @@
+{
+  "client_id": "https://REPLACE_WITH_DEPLOYED_ORIGIN/client-metadata.json",
+  "client_name": "HAH — Messages",
+  "client_uri": "https://REPLACE_WITH_DEPLOYED_ORIGIN/HAH",
+  "redirect_uris": [
+    "https://REPLACE_WITH_DEPLOYED_ORIGIN/HAH/messages"
+  ],
+  "scope": "atproto transition:generic",
+  "grant_types": ["authorization_code", "refresh_token"],
+  "response_types": ["code"],
+  "application_type": "web",
+  "token_endpoint_auth_method": "none",
+  "dpop_bound_access_tokens": true
+}
