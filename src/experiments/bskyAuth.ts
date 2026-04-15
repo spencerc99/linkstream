@@ -160,10 +160,34 @@ async function resolveHandle(did: string): Promise<string | undefined> {
   }
 }
 
+const PENDING_SIGNIN_KEY = "hah.signin.pending";
+
 export async function signIn(handle: string): Promise<void> {
+  const trimmed = handle.trim();
+  if (!trimmed) return;
+
+  // AT Proto requires 127.0.0.1 (not localhost) in loopback redirect URIs.
+  // If the user clicked sign-in while on a hostname that doesn't match our
+  // configured redirect_uri, navigate them to the correct one first and
+  // auto-resume the sign-in after the hop.
+  const { redirectUri } = getClientConfig();
+  try {
+    const redirectHost = new URL(redirectUri).hostname;
+    if (redirectHost !== location.hostname) {
+      sessionStorage.setItem(PENDING_SIGNIN_KEY, trimmed);
+      const target = new URL(location.href);
+      target.hostname = redirectHost;
+      target.port = new URL(redirectUri).port;
+      location.href = target.toString();
+      return;
+    }
+  } catch {
+    // fall through and try normal sign-in
+  }
+
   await initAuth();
   if (!client) throw new Error("auth client not ready");
-  await client.signIn(handle.trim(), {
+  await client.signIn(trimmed, {
     scope: "atproto transition:generic",
   });
   // signIn triggers a redirect; code past this rarely executes

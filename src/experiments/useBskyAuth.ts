@@ -8,14 +8,31 @@ import {
   subscribe,
 } from "./bskyAuth";
 
+const PENDING_SIGNIN_KEY = "hah.signin.pending";
+
 export function useBskyAuth() {
   const [state, setState] = useState<AuthState>(() => getAuthState());
 
   useEffect(() => {
     const unsub = subscribe(setState);
-    // Fire-and-forget init on mount. Loads OAuth client and consumes any
-    // OAuth callback params present in the URL.
-    void initAuth();
+
+    // Only touch the OAuth client when there's an actual reason to:
+    //   1. We're handling an OAuth callback (URL has ?code=&state=)
+    //   2. A sign-in intent was stashed before a cross-hostname hop
+    // Otherwise the page stays in "idle" and the user has to click sign-in
+    // to trigger any OAuth work. This prevents the oauth-client-browser
+    // from normalizing the URL's hostname (localhost → 127.0.0.1) on mount.
+    const params = new URLSearchParams(location.search);
+    const isCallback = params.has("code") && params.has("state");
+    const pendingHandle = sessionStorage.getItem(PENDING_SIGNIN_KEY);
+
+    if (isCallback) {
+      void initAuth();
+    } else if (pendingHandle) {
+      sessionStorage.removeItem(PENDING_SIGNIN_KEY);
+      void signInImpl(pendingHandle);
+    }
+
     return unsub;
   }, []);
 
