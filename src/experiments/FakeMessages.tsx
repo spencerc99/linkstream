@@ -7,7 +7,7 @@ import { useBskyAuth } from "./useBskyAuth";
 import { postReply, type ReplyTarget } from "./bskyAuth";
 import "./FakeMessages.scss";
 
-type MessagesMode = "friends" | "accounts" | "groups";
+type MessagesMode = "accounts" | "groups";
 
 const TAPBACK_REACTIONS = [
   "\u2764\uFE0F",
@@ -21,30 +21,11 @@ const TAPBACK_REACTIONS = [
 const MODE_STORAGE_KEY = "hah.messages.mode";
 
 function loadStoredMode(): MessagesMode {
-  if (typeof localStorage === "undefined") return "friends";
+  if (typeof localStorage === "undefined") return "accounts";
   const raw = localStorage.getItem(MODE_STORAGE_KEY);
-  if (raw === "friends" || raw === "accounts" || raw === "groups") return raw;
-  return "friends";
+  if (raw === "accounts" || raw === "groups") return raw;
+  return "accounts";
 }
-
-// ---- Friends mode ---------------------------------------------------------
-
-const FRIEND_CONTACTS = [
-  { id: "friend-1", name: "Sarah", color: "#FF6B6B", weight: 5 },
-  { id: "friend-2", name: "Alex K.", color: "#4ECDC4", weight: 3 },
-  { id: "friend-3", name: "Jordan", color: "#45B7D1", weight: 4 },
-  { id: "friend-4", name: "Sam", color: "#96CEB4", weight: 2 },
-  { id: "friend-5", name: "Casey", color: "#FFD93D", weight: 3 },
-  { id: "friend-6", name: "Riley M.", color: "#C9B1FF", weight: 1 },
-  { id: "friend-7", name: "Morgan", color: "#98D8C8", weight: 2 },
-  { id: "friend-8", name: "Taylor", color: "#F4A261", weight: 4 },
-  { id: "friend-9", name: "Jamie", color: "#FF9FF3", weight: 1 },
-  { id: "friend-10", name: "Drew", color: "#54A0FF", weight: 1 },
-];
-
-const WEIGHTED_FRIENDS = FRIEND_CONTACTS.flatMap((c) =>
-  Array(c.weight).fill(c)
-);
 
 // Deterministic color from a string (for account/group participant avatars)
 const AVATAR_PALETTE = [
@@ -269,25 +250,6 @@ export function FakeMessages() {
   const [_profileTick, setProfileTick] = useState(0);
 
   // Each mode holds its own conversations + active id
-  const [friendsConvos, setFriendsConvos] = useState<
-    Map<string, Conversation>
-  >(() => {
-    const m = new Map<string, Conversation>();
-    FRIEND_CONTACTS.forEach((c) => {
-      m.set(c.id, {
-        id: c.id,
-        kind: "friends",
-        displayName: c.name,
-        avatarColor: c.color,
-        avatarInitial: c.name[0],
-        messages: [],
-        unreadCount: 0,
-        isTyping: false,
-        lastActivity: 0,
-      });
-    });
-    return m;
-  });
   const [accountsConvos, setAccountsConvos] = useState<
     Map<string, Conversation>
   >(new Map());
@@ -295,9 +257,6 @@ export function FakeMessages() {
     new Map()
   );
 
-  const [friendsActiveId, setFriendsActiveId] = useState<string>(
-    FRIEND_CONTACTS[0].id
-  );
   const [accountsActiveId, setAccountsActiveId] = useState<string | null>(null);
   const [groupsActiveId, setGroupsActiveId] = useState<string | null>(null);
 
@@ -325,7 +284,6 @@ export function FakeMessages() {
 
   // Refs so firehose callback stays stable but reads latest mode/active id
   const activeIdsRef = useRef({
-    friends: friendsActiveId,
     accounts: accountsActiveId,
     groups: groupsActiveId,
   });
@@ -341,11 +299,10 @@ export function FakeMessages() {
 
   useEffect(() => {
     activeIdsRef.current = {
-      friends: friendsActiveId,
       accounts: accountsActiveId,
       groups: groupsActiveId,
     };
-  }, [friendsActiveId, accountsActiveId, groupsActiveId]);
+  }, [accountsActiveId, groupsActiveId]);
 
   // Re-render when profiles resolve
   useEffect(() => {
@@ -355,7 +312,7 @@ export function FakeMessages() {
   // Auto-scroll on message change / mode switch
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [friendsConvos, accountsConvos, groupsConvos, mode]);
+  }, [accountsConvos, groupsConvos, mode]);
 
   // ---- Delivery ticker: drains pendingQueue at a mode-dependent rate ----
   useEffect(() => {
@@ -365,10 +322,7 @@ export function FakeMessages() {
         const msg = pendingQueue.current.shift()!;
         deliverMessage(msg);
       }
-      const m = modeRef.current;
-      const base = m === "friends" ? 300 : 120;
-      const jitter = m === "friends" ? 500 : 200;
-      timeout = setTimeout(tick, base + Math.random() * jitter);
+      timeout = setTimeout(tick, 120 + Math.random() * 200);
     };
     tick();
     return () => clearTimeout(timeout);
@@ -377,11 +331,7 @@ export function FakeMessages() {
   function deliverMessage(p: PendingDelivery) {
     const activeId = activeIdsRef.current[p.mode];
     const setter =
-      p.mode === "friends"
-        ? setFriendsConvos
-        : p.mode === "accounts"
-          ? setAccountsConvos
-          : setGroupsConvos;
+      p.mode === "accounts" ? setAccountsConvos : setGroupsConvos;
 
     setter((prev) => {
       const next = new Map(prev);
@@ -428,29 +378,6 @@ export function FakeMessages() {
   }
 
   // ---- Mode-specific firehose handling ---------------------------------
-
-  const handleFriendsFirehose = useCallback((data: any) => {
-    const post = usableNonReplyPost(data);
-    if (!post) return;
-    const contact =
-      WEIGHTED_FRIENDS[Math.floor(Math.random() * WEIGHTED_FRIENDS.length)];
-    setFriendsConvos((prev) => {
-      const next = new Map(prev);
-      const conv = next.get(contact.id);
-      if (!conv) return prev;
-      next.set(contact.id, { ...conv, isTyping: true });
-      return next;
-    });
-    pendingQueue.current.push({
-      mode: "friends",
-      conversationId: contact.id,
-      text: post.text,
-      timestamp: Date.now(),
-      did: post.did,
-      rkey: post.rkey,
-      cid: post.cid,
-    });
-  }, []);
 
   const handleAccountsFirehose = useCallback((data: any) => {
     const post = usableNonReplyPost(data);
@@ -697,21 +624,12 @@ export function FakeMessages() {
 
       const now = Date.now();
       // Per-mode intake throttle:
-      // - Friends: slow cadence preserves cozy pacing
       // - Accounts: near-unthrottled so the sidebar fills fast
       // - Groups: medium so threads have room to accumulate replies
-      const minGap =
-        modeRef.current === "friends"
-          ? 400
-          : modeRef.current === "accounts"
-            ? 60
-            : 150;
+      const minGap = modeRef.current === "accounts" ? 60 : 150;
       if (now - lastFirehoseAt.current < minGap) return;
 
       switch (modeRef.current) {
-        case "friends":
-          handleFriendsFirehose(data);
-          break;
         case "accounts":
           handleAccountsFirehose(data);
           break;
@@ -721,12 +639,7 @@ export function FakeMessages() {
       }
       lastFirehoseAt.current = now;
     },
-    [
-      handleFriendsFirehose,
-      handleAccountsFirehose,
-      handleGroupsFirehose,
-      backfillThread,
-    ]
+    [handleAccountsFirehose, handleGroupsFirehose, backfillThread]
   );
 
   useJetStream({
@@ -737,30 +650,15 @@ export function FakeMessages() {
 
   // ---- Derived current-mode state --------------------------------------
 
-  const currentConvos =
-    mode === "friends"
-      ? friendsConvos
-      : mode === "accounts"
-        ? accountsConvos
-        : groupsConvos;
+  const currentConvos = mode === "accounts" ? accountsConvos : groupsConvos;
   const currentActiveId =
-    mode === "friends"
-      ? friendsActiveId
-      : mode === "accounts"
-        ? accountsActiveId
-        : groupsActiveId;
+    mode === "accounts" ? accountsActiveId : groupsActiveId;
   const setCurrentActiveId =
-    mode === "friends"
-      ? setFriendsActiveId
-      : mode === "accounts"
-        ? (id: string | null) => setAccountsActiveId(id)
-        : (id: string | null) => setGroupsActiveId(id);
+    mode === "accounts"
+      ? (id: string | null) => setAccountsActiveId(id)
+      : (id: string | null) => setGroupsActiveId(id);
   const setCurrentConvos =
-    mode === "friends"
-      ? setFriendsConvos
-      : mode === "accounts"
-        ? setAccountsConvos
-        : setGroupsConvos;
+    mode === "accounts" ? setAccountsConvos : setGroupsConvos;
 
   // For groups mode: only show conversations with >=2 participants
   const visibleConvos = Array.from(currentConvos.values()).filter((c) => {
@@ -983,11 +881,7 @@ export function FakeMessages() {
   const totalUnread = sortedConvos.reduce((s, c) => s + c.unreadCount, 0);
 
   const placeholder =
-    mode === "friends"
-      ? "iMessage"
-      : mode === "accounts"
-        ? "reply to this account..."
-        : "send to the group...";
+    mode === "accounts" ? "reply to this account..." : "send to the group...";
 
   return (
     <div className="fake-messages">
@@ -1082,15 +976,6 @@ export function FakeMessages() {
             );
           })()}
         <div className="mode-switcher" role="tablist">
-          <button
-            role="tab"
-            aria-selected={mode === "friends"}
-            className={`mode-tab ${mode === "friends" ? "active" : ""}`}
-            onClick={() => handleModeChange("friends")}
-            title="10 fixed fake contacts receive random Bluesky posts"
-          >
-            Friends
-          </button>
           <button
             role="tab"
             aria-selected={mode === "accounts"}
