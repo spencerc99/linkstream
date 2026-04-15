@@ -105,14 +105,46 @@ export async function initAuth(): Promise<void> {
         setState({ status: "signed-out" });
       }
     } catch (e) {
-      console.error("bskyAuth init failed", e);
+      console.error("bskyAuth init failed, clearing stored state", e);
+      // Try to blow away whatever stored state might be poisoned so the page
+      // still works. User can sign in again fresh.
+      await wipeAuthStorage().catch(() => {});
       setState({
-        status: "error",
+        status: "signed-out",
         error: e instanceof Error ? e.message : String(e),
       });
+      // Reset so a future call can retry with clean state
+      initPromise = null;
+      client = null;
+      agent = null;
+      session = null;
     }
   })();
   return initPromise;
+}
+
+// Clears any IndexedDB databases created by @atproto/oauth-client-browser.
+// Exposed so the UI can offer a reset if auth gets stuck.
+export async function wipeAuthStorage(): Promise<void> {
+  if (typeof indexedDB === "undefined" || !indexedDB.databases) return;
+  const dbs = await indexedDB.databases();
+  await Promise.all(
+    dbs
+      .map((d) => d.name)
+      .filter(
+        (name): name is string =>
+          !!name && (name.includes("atproto") || name.includes("oauth"))
+      )
+      .map(
+        (name) =>
+          new Promise<void>((resolve) => {
+            const req = indexedDB.deleteDatabase(name);
+            req.onsuccess = () => resolve();
+            req.onerror = () => resolve();
+            req.onblocked = () => resolve();
+          })
+      )
+  );
 }
 
 async function resolveHandle(did: string): Promise<string | undefined> {
