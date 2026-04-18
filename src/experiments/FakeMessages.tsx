@@ -84,6 +84,8 @@ interface Conversation {
   // For groups: root post URI + CID, needed to construct real replies
   rootUri?: string;
   rootCid?: string;
+  // For accounts: thread roots this account has participated in
+  trackedThreads?: Set<string>;
   messages: Message[];
   unreadCount: number;
   isTyping: boolean;
@@ -120,31 +122,6 @@ function baseTextFilter(text: string, langsDeclared: boolean): string | null {
   return t;
 }
 
-function usableNonReplyPost(data: any): {
-  text: string;
-  did: string;
-  rkey: string;
-  cid?: string;
-} | null {
-  const record = data.commit?.record;
-  if (!record?.text) return null;
-  if (record.embed) return null;
-  if (record.reply) return null;
-
-  if (Array.isArray(record.langs) && record.langs.length > 0) {
-    if (!record.langs.some((l: string) => l.toLowerCase().startsWith("en"))) {
-      return null;
-    }
-  }
-  const text = baseTextFilter(record.text, !!record.langs);
-  if (!text) return null;
-
-  const did = data.did as string | undefined;
-  const rkey = data.commit?.rkey as string | undefined;
-  const cid = data.commit?.cid as string | undefined;
-  if (!did || !rkey) return null;
-  return { text, did, rkey, cid };
-}
 
 function usableAnyPost(data: any): {
   text: string;
@@ -184,6 +161,15 @@ function postUri(did: string, rkey: string): string {
 const MAX_ACCOUNT_CONVOS = 40;
 const MAX_GROUP_CONVOS = 30;
 const MAX_MESSAGES_PER_CONVO = 120;
+const MAX_TRACKED_THREADS_PER_ACCOUNT = 10;
+
+// Reverse index: which account conversations track which thread roots.
+// Lets us route incoming firehose replies to the right account convos
+// without scanning all conversations on every post.
+const threadToAccounts = new Map<string, Set<string>>();
+
+// Dedup: parent posts we've already fetched for context
+const fetchedParents = new Set<string>();
 
 const BSKY_APPVIEW = "https://public.api.bsky.app";
 
@@ -379,60 +365,207 @@ export function FakeMessages() {
 
   // ---- Mode-specific firehose handling ---------------------------------
 
-  const handleAccountsFirehose = useCallback((data: any) => {
-    const post = usableNonReplyPost(data);
-    if (!post) return;
-    // Kick off profile resolution
-    profileResolver.get(post.did);
+  // Fetch a single parent post for inline context in an account's conversation
+  const fetchParentContext = useCallback(
+    async (parentUri: string, accountDid: string) => {
+      const key = `${accountDid}:${parentUri}`;
+      if (fetchedParents.has(key)) return;
+      fetchedParents.add(key);
 
-    setAccountsConvos((prev) => {
-      const next = new Map(prev);
-      const existing = next.get(post.did);
-      const prof = profileResolver.peek(post.did);
-      const displayName =
-        prof?.displayName || prof?.handle || shortDid(post.did);
-      const subtitle = prof?.handle ? `@${prof.handle}` : undefined;
+      try {
+        const res = await fetch(
+          `${BSKY_APPVIEW}/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(parentUri)}`
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          posts?: Array<{
+            uri: string;
+            cid: string;
+            author: {
+              did: string;
+              handle: string;
+              displayName?: string;
+              avatar?: string;
+            };
+            record: { text?: string; createdAt?: string };
+          }>;
+        };
+        const parent = data.posts?.[0];
+        if (!parent || !parent.record?.text) return;
 
-      if (existing) {
-        next.set(post.did, {
-          ...existing,
-          displayName,
-          subtitle,
-          avatarUrl: prof?.avatar,
-          isTyping: true,
+        profileResolver.hydrate({
+          did: parent.author.did,
+          handle: parent.author.handle,
+          displayName: parent.author.displayName,
+          avatar: parent.author.avatar,
         });
-      } else {
-        // LRU evict if over cap
-        if (next.size >= MAX_ACCOUNT_CONVOS) {
-          evictOldestUnlocked(next);
-        }
-        next.set(post.did, {
-          id: post.did,
-          kind: "accounts",
-          displayName,
-          subtitle,
-          avatarColor: colorForDid(post.did),
-          avatarInitial: (displayName[0] || "?").toUpperCase(),
-          avatarUrl: prof?.avatar,
-          messages: [],
-          unreadCount: 0,
-          isTyping: true,
-          lastActivity: Date.now(),
+
+        const ts = parent.record.createdAt
+          ? new Date(parent.record.createdAt).getTime()
+          : Date.now() - 1000;
+
+        // Insert directly into the account's conversation (no pending queue —
+        // parent is context, not a new incoming message)
+        setAccountsConvos((prev) => {
+          const next = new Map(prev);
+          const conv = next.get(accountDid);
+          if (!conv) return prev;
+          // Dedup
+          if (conv.messages.some((m) => m.id === `parent-${parent.uri}`)) {
+            return prev;
+          }
+          const msgs = [
+            ...conv.messages,
+            {
+              id: `parent-${parent.uri}`,
+              text: parent.record.text!,
+              timestamp: ts,
+              fromContact: true,
+              sourceDid: parent.author.did,
+              sourceRkey: rkeyFromUri(parent.uri),
+              sourceCid: parent.cid,
+              sourceUri: parent.uri,
+              authorDid: parent.author.did,
+              authorName:
+                parent.author.displayName || parent.author.handle,
+              authorColor: colorForDid(parent.author.did),
+            },
+          ]
+            .sort((a, b) => a.timestamp - b.timestamp)
+            .slice(-MAX_MESSAGES_PER_CONVO);
+          next.set(accountDid, { ...conv, messages: msgs });
+          return next;
         });
+      } catch (e) {
+        console.error("fetchParentContext failed", e);
       }
-      return next;
-    });
+    },
+    []
+  );
 
-    pendingQueue.current.push({
-      mode: "accounts",
-      conversationId: post.did,
-      text: post.text,
-      timestamp: Date.now(),
-      did: post.did,
-      rkey: post.rkey,
-      cid: post.cid,
-    });
-  }, []);
+  const handleAccountsFirehose = useCallback(
+    (data: any) => {
+      // Accept ALL posts (including replies) — usableAnyPost instead of
+      // usableNonReplyPost, so we see the account's reply activity
+      const post = usableAnyPost(data);
+      if (!post) return;
+      profileResolver.get(post.did);
+
+      const isReply = !!post.replyRootUri;
+      const threadRoot = post.replyRootUri || postUri(post.did, post.rkey);
+
+      // ── 1. Route post to the author's own conversation ──────────────
+      setAccountsConvos((prev) => {
+        const next = new Map(prev);
+        const existing = next.get(post.did);
+        const prof = profileResolver.peek(post.did);
+        const displayName =
+          prof?.displayName || prof?.handle || shortDid(post.did);
+        const subtitle = prof?.handle ? `@${prof.handle}` : undefined;
+
+        if (existing) {
+          // If this is a reply, track the thread root on this conversation
+          let tracked = existing.trackedThreads || new Set<string>();
+          if (isReply) {
+            tracked = new Set(tracked);
+            // Cap tracked threads per account
+            if (tracked.size >= MAX_TRACKED_THREADS_PER_ACCOUNT) {
+              const oldest = tracked.values().next().value;
+              if (oldest !== undefined) {
+                tracked.delete(oldest);
+                threadToAccounts.get(oldest)?.delete(post.did);
+              }
+            }
+            tracked.add(threadRoot);
+          }
+          next.set(post.did, {
+            ...existing,
+            displayName,
+            subtitle,
+            avatarUrl: prof?.avatar,
+            trackedThreads: tracked,
+            isTyping: true,
+          });
+        } else {
+          if (next.size >= MAX_ACCOUNT_CONVOS) {
+            evictOldestUnlocked(next);
+          }
+          const tracked = new Set<string>();
+          if (isReply) tracked.add(threadRoot);
+          next.set(post.did, {
+            id: post.did,
+            kind: "accounts",
+            displayName,
+            subtitle,
+            avatarColor: colorForDid(post.did),
+            avatarInitial: (displayName[0] || "?").toUpperCase(),
+            avatarUrl: prof?.avatar,
+            trackedThreads: tracked,
+            messages: [],
+            unreadCount: 0,
+            isTyping: true,
+            lastActivity: Date.now(),
+          });
+        }
+        return next;
+      });
+
+      // Update reverse index
+      if (isReply) {
+        if (!threadToAccounts.has(threadRoot)) {
+          threadToAccounts.set(threadRoot, new Set());
+        }
+        threadToAccounts.get(threadRoot)!.add(post.did);
+
+        // Fetch parent post for inline context (fire-and-forget)
+        const parentUri = data.commit?.record?.reply?.parent?.uri;
+        if (typeof parentUri === "string") {
+          void fetchParentContext(parentUri, post.did);
+        }
+      }
+
+      // Queue this post for delivery into the author's conversation
+      pendingQueue.current.push({
+        mode: "accounts",
+        conversationId: post.did,
+        text: post.text,
+        timestamp: Date.now(),
+        did: post.did,
+        rkey: post.rkey,
+        cid: post.cid,
+      });
+
+      // ── 2. Route reply to other accounts tracking this thread ──────
+      if (isReply) {
+        const trackers = threadToAccounts.get(threadRoot);
+        if (trackers) {
+          for (const trackerDid of trackers) {
+            if (trackerDid === post.did) continue; // already handled above
+            profileResolver.get(post.did);
+            pendingQueue.current.push({
+              mode: "accounts",
+              conversationId: trackerDid,
+              text: post.text,
+              timestamp: Date.now(),
+              did: post.did,
+              rkey: post.rkey,
+              cid: post.cid,
+              authorDid: post.did,
+            });
+            // Set typing indicator on the tracker's conversation
+            setAccountsConvos((prev) => {
+              const next = new Map(prev);
+              const conv = next.get(trackerDid);
+              if (!conv) return prev;
+              next.set(trackerDid, { ...conv, isTyping: true });
+              return next;
+            });
+          }
+        }
+      }
+    },
+    [fetchParentContext]
+  );
 
   const backfillThread = useCallback(async (rootUri: string) => {
     if (backfilledThreads.has(rootUri)) return;
@@ -1069,10 +1202,18 @@ export function FakeMessages() {
                 const prev = activeConversation.messages[i - 1];
                 const showTs =
                   !prev || msg.timestamp - prev.timestamp > 300000;
+                // Show author name above bubble when:
+                // - Groups mode: always for incoming from different authors
+                // - Accounts mode: when the message is from someone OTHER than
+                //   the account this conversation belongs to (thread context)
+                const isThirdParty =
+                  activeConversation.kind === "accounts" &&
+                  msg.authorDid &&
+                  msg.authorDid !== activeConversation.id;
                 const showAuthorLabel =
-                  activeConversation.kind === "groups" &&
                   msg.fromContact &&
                   msg.authorName &&
+                  (activeConversation.kind === "groups" || isThirdParty) &&
                   (!prev ||
                     prev.authorDid !== msg.authorDid ||
                     !prev.fromContact);
