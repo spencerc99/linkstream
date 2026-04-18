@@ -25,12 +25,18 @@ export function useBskyAuth() {
     const params = new URLSearchParams(location.search);
     const isCallback = params.has("code") && params.has("state");
     const pendingHandle = sessionStorage.getItem(PENDING_SIGNIN_KEY);
+    const hasStoredSession =
+      typeof localStorage !== "undefined" &&
+      localStorage.getItem("hah.auth.hasSession") === "1";
 
     if (isCallback) {
       void initAuth();
     } else if (pendingHandle) {
       sessionStorage.removeItem(PENDING_SIGNIN_KEY);
       void signInImpl(pendingHandle);
+    } else if (hasStoredSession) {
+      // Previous session exists in IndexedDB — restore it
+      void initAuth();
     }
 
     return unsub;

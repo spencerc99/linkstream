@@ -32,6 +32,8 @@ let agent: Agent | null = null;
 let session: OAuthSession | null = null;
 let initPromise: Promise<void> | null = null;
 
+const HAS_SESSION_KEY = "hah.auth.hasSession";
+
 function setState(next: AuthState) {
   state = next;
   for (const fn of subscribers) fn(state);
@@ -97,11 +99,19 @@ export async function initAuth(): Promise<void> {
             : undefined,
           did: session.did,
         });
+        // Remember that we have a session so future page loads can restore it
+        try {
+          localStorage.setItem(HAS_SESSION_KEY, "1");
+        } catch {}
         // Strip OAuth params from the URL so refresh doesn't re-process them
         if (location.search.includes("code=") || location.search.includes("state=")) {
           history.replaceState(null, "", location.pathname);
         }
       } else {
+        // No session found — clear stale flag if present
+        try {
+          localStorage.removeItem(HAS_SESSION_KEY);
+        } catch {}
         setState({ status: "signed-out" });
       }
     } catch (e) {
@@ -109,6 +119,9 @@ export async function initAuth(): Promise<void> {
       // Try to blow away whatever stored state might be poisoned so the page
       // still works. User can sign in again fresh.
       await wipeAuthStorage().catch(() => {});
+      try {
+        localStorage.removeItem(HAS_SESSION_KEY);
+      } catch {}
       setState({
         status: "signed-out",
         error: e instanceof Error ? e.message : String(e),
@@ -186,6 +199,9 @@ export async function signIn(handle: string): Promise<void> {
   }
 
   await initAuth();
+  // If initAuth restored an existing session, we're already signed in —
+  // don't fire a second redirect to bsky.social
+  if (state.status === "signed-in") return;
   if (!client) throw new Error("auth client not ready");
   await client.signIn(trimmed, {
     scope: "atproto transition:generic",
@@ -203,6 +219,9 @@ export async function signOut(): Promise<void> {
   }
   session = null;
   agent = null;
+  try {
+    localStorage.removeItem(HAS_SESSION_KEY);
+  } catch {}
   setState({ status: "signed-out" });
 }
 
