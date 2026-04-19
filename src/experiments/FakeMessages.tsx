@@ -90,8 +90,6 @@ interface Conversation {
   unreadCount: number;
   isTyping: boolean;
   lastActivity: number;
-  // User has viewed or sent a message in this convo — never evict
-  userViewed?: boolean;
   userReplied?: boolean;
   // Real replies the user has posted to Bluesky in this convo
   realReplies?: number;
@@ -222,7 +220,7 @@ function evictOldestUnlocked(map: Map<string, Conversation>): void {
   let oldestId: string | null = null;
   let oldestAt = Infinity;
   for (const [k, v] of map) {
-    if (v.userReplied || v.userViewed) continue;
+    if (v.userReplied) continue;
     if (v.lastActivity < oldestAt) {
       oldestAt = v.lastActivity;
       oldestId = k;
@@ -968,8 +966,8 @@ export function FakeMessages() {
       const next = new Map(prev);
       const conv = next.get(id);
       if (!conv) return prev;
-      if (conv.unreadCount === 0 && conv.userViewed) return prev;
-      next.set(id, { ...conv, unreadCount: 0, userViewed: true });
+      if (conv.unreadCount === 0) return prev;
+      next.set(id, { ...conv, unreadCount: 0 });
       return next;
     });
   };
@@ -1017,6 +1015,36 @@ export function FakeMessages() {
 
   const placeholder =
     mode === "accounts" ? "reply to this account..." : "send to the group...";
+
+  // Keyboard navigation: ↑/↓ to move between conversations, Esc to focus input
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Don't intercept when typing in an input
+      const tag = (e.target as HTMLElement)?.tagName;
+      const isInput = tag === "INPUT" || tag === "TEXTAREA";
+
+      if (e.key === "ArrowUp" || (e.key === "j" && !isInput)) {
+        e.preventDefault();
+        const idx = sortedConvos.findIndex((c) => c.id === currentActiveId);
+        const prev = idx > 0 ? idx - 1 : sortedConvos.length - 1;
+        if (sortedConvos[prev]) handleSelectConversation(sortedConvos[prev].id);
+      } else if (e.key === "ArrowDown" || (e.key === "k" && !isInput)) {
+        e.preventDefault();
+        const idx = sortedConvos.findIndex((c) => c.id === currentActiveId);
+        const next = idx < sortedConvos.length - 1 ? idx + 1 : 0;
+        if (sortedConvos[next]) handleSelectConversation(sortedConvos[next].id);
+      } else if (e.key === "Escape" && isInput) {
+        (e.target as HTMLElement).blur();
+      } else if ((e.key === "i" || e.key === "/") && !isInput) {
+        e.preventDefault();
+        inputRef.current?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [sortedConvos, currentActiveId, handleSelectConversation]);
 
   return (
     <div className="fake-messages">
@@ -1332,6 +1360,7 @@ export function FakeMessages() {
             )}
             <div className="message-input-area">
               <input
+                ref={inputRef}
                 type="text"
                 value={inputText}
                 onChange={(e) => setInputText(e.target.value)}
