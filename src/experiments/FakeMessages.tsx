@@ -90,7 +90,8 @@ interface Conversation {
   unreadCount: number;
   isTyping: boolean;
   lastActivity: number;
-  // User has sent at least one message in this convo — never evict
+  // User has viewed or sent a message in this convo — never evict
+  userViewed?: boolean;
   userReplied?: boolean;
   // Real replies the user has posted to Bluesky in this convo
   realReplies?: number;
@@ -221,7 +222,7 @@ function evictOldestUnlocked(map: Map<string, Conversation>): void {
   let oldestId: string | null = null;
   let oldestAt = Infinity;
   for (const [k, v] of map) {
-    if (v.userReplied) continue;
+    if (v.userReplied || v.userViewed) continue;
     if (v.lastActivity < oldestAt) {
       oldestAt = v.lastActivity;
       oldestId = k;
@@ -966,8 +967,9 @@ export function FakeMessages() {
     setCurrentConvos((prev) => {
       const next = new Map(prev);
       const conv = next.get(id);
-      if (!conv || conv.unreadCount === 0) return prev;
-      next.set(id, { ...conv, unreadCount: 0 });
+      if (!conv) return prev;
+      if (conv.unreadCount === 0 && conv.userViewed) return prev;
+      next.set(id, { ...conv, unreadCount: 0, userViewed: true });
       return next;
     });
   };
