@@ -1,0 +1,11 @@
+name = "linkstream-haiku"
+main = "src/index.ts"
+compatibility_date = "2025-04-01"
+
+[vars]
+# comma-separated list of allowed origins, or "*"
+ALLOWED_ORIGINS = "*"
+
+# No secrets: this worker is a bring-your-own-key relay. Each request must
+# carry the caller's own Anthropic key in the x-anthropic-key header, which is
+# forwarded to Anthropic and never stored. There is no shared key to protect.

@@ -5,6 +5,11 @@ interface RemoteControlProps {
   onStateChange: (newState: Partial<RemoteControlState>) => void;
 }
 
+// Visual-mode (grid/focus/meteor) and content-filter (all/tv/radio/flipbook)
+// controls are hidden for the pushable release. Flip to true to bring them
+// back; the handlers and config below are kept intact for that.
+const SHOW_MODE_CONTROLS = false;
+
 export function RemoteControl({ state, onStateChange }: RemoteControlProps) {
   const handleVisualModeChange = (mode: VisualMode) => {
     onStateChange({ visualMode: mode });
@@ -72,6 +77,9 @@ export function RemoteControl({ state, onStateChange }: RemoteControlProps) {
       {/* Main Control Area */}
       <div style={{ display: "flex", gap: "24px", alignItems: "center" }}>
         {/* Left Column: Visual Modes & Content Filters */}
+        {/* Hidden for the pushable release — only play/pause + speed are exposed.
+            Restore by flipping SHOW_MODE_CONTROLS to true. */}
+        {SHOW_MODE_CONTROLS && (
         <div style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
           {/* Visual Mode Buttons */}
           <div style={{ display: "flex", gap: "8px" }}>
@@ -217,6 +225,7 @@ export function RemoteControl({ state, onStateChange }: RemoteControlProps) {
             )}
           </div>
         </div>
+        )}
 
         {/* Right Column: Playback Controls */}
         <div

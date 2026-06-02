@@ -1,0 +1,267 @@
+// Lightweight singleton wrapper around @atproto/oauth-client-browser that the
+// Messages experiment uses to let a user sign in and post real replies.
+//
+// Heavy deps (oauth-client-browser, @atproto/api) are dynamically imported so
+// they only load when sign-in is attempted.
+
+import type { OAuthSession } from "@atproto/oauth-client-browser";
+import type { Agent } from "@atproto/api";
+
+export interface ReplyTarget {
+  rootUri: string;
+  rootCid: string;
+  parentUri: string;
+  parentCid: string;
+}
+
+export interface AuthState {
+  status: "idle" | "loading" | "signed-in" | "signed-out" | "error";
+  handle?: string;
+  did?: string;
+  error?: string;
+}
+
+type Subscriber = (s: AuthState) => void;
+
+const subscribers = new Set<Subscriber>();
+let state: AuthState = { status: "idle" };
+let client:
+  | import("@atproto/oauth-client-browser").BrowserOAuthClient
+  | null = null;
+let agent: Agent | null = null;
+let session: OAuthSession | null = null;
+let initPromise: Promise<void> | null = null;
+
+const HAS_SESSION_KEY = "hah.auth.hasSession";
+
+function setState(next: AuthState) {
+  state = next;
+  for (const fn of subscribers) fn(state);
+}
+
+export function getAuthState(): AuthState {
+  return state;
+}
+
+export function subscribe(fn: Subscriber): () => void {
+  subscribers.add(fn);
+  fn(state);
+  return () => subscribers.delete(fn);
+}
+
+function getClientConfig() {
+  const host = location.hostname;
+  const isLocal = host === "127.0.0.1" || host === "localhost";
+  const origin = isLocal
+    ? `http://127.0.0.1:${location.port}`
+    : location.origin;
+  const redirectUri = `${origin}/HAH/messages`;
+
+  if (isLocal) {
+    const clientId =
+      `http://localhost?redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&scope=${encodeURIComponent("atproto transition:generic")}`;
+    return { clientId, redirectUri };
+  }
+  return {
+    clientId: `${origin}/client-metadata.json`,
+    redirectUri,
+  };
+}
+
+export async function initAuth(): Promise<void> {
+  if (initPromise) return initPromise;
+  initPromise = (async () => {
+    setState({ status: "loading" });
+    try {
+      const [{ BrowserOAuthClient }, api] = await Promise.all([
+        import("@atproto/oauth-client-browser"),
+        import("@atproto/api"),
+      ]);
+
+      const { clientId } = getClientConfig();
+
+      client = await BrowserOAuthClient.load({
+        clientId,
+        handleResolver: "https://bsky.social",
+      });
+
+      // If this page load is the OAuth callback, init() consumes the code.
+      // Otherwise it restores any stored session.
+      const result = await client.init();
+      if (result && "session" in result) {
+        session = result.session;
+        agent = new api.Agent(session);
+        // Set signed-in immediately; resolve the handle in the background so a
+        // slow profile lookup can't hold the UI on "loading".
+        setState({ status: "signed-in", did: session.did });
+        if (session.did) {
+          const did = session.did;
+          void resolveHandle(did)
+            .then((handle) => {
+              if (state.status === "signed-in" && state.did === did) {
+                setState({ ...state, handle });
+              }
+            })
+            .catch(() => {});
+        }
+        // Remember that we have a session so future page loads can restore it
+        try {
+          localStorage.setItem(HAS_SESSION_KEY, "1");
+        } catch {}
+        // Strip OAuth params (from query or fragment) so a refresh doesn't
+        // re-process them.
+        const hasOAuthParams =
+          /(?:^|[?#&])(code|state)=/.test(location.search) ||
+          /(?:^|[?#&])(code|state)=/.test(location.hash);
+        if (hasOAuthParams) {
+          history.replaceState(null, "", location.pathname);
+        }
+      } else {
+        // No session found — clear stale flag if present
+        try {
+          localStorage.removeItem(HAS_SESSION_KEY);
+        } catch {}
+        setState({ status: "signed-out" });
+      }
+    } catch (e) {
+      console.error("[bskyAuth] init failed, clearing stored state", e);
+      // Try to blow away whatever stored state might be poisoned so the page
+      // still works. User can sign in again fresh.
+      await wipeAuthStorage().catch(() => {});
+      try {
+        localStorage.removeItem(HAS_SESSION_KEY);
+      } catch {}
+      setState({
+        status: "signed-out",
+        error: e instanceof Error ? e.message : String(e),
+      });
+      // Reset so a future call can retry with clean state
+      initPromise = null;
+      client = null;
+      agent = null;
+      session = null;
+    }
+  })();
+  return initPromise;
+}
+
+// Clears any IndexedDB databases created by @atproto/oauth-client-browser.
+// Exposed so the UI can offer a reset if auth gets stuck.
+export async function wipeAuthStorage(): Promise<void> {
+  if (typeof indexedDB === "undefined" || !indexedDB.databases) return;
+  const dbs = await indexedDB.databases();
+  await Promise.all(
+    dbs
+      .map((d) => d.name)
+      .filter(
+        (name): name is string =>
+          !!name && (name.includes("atproto") || name.includes("oauth"))
+      )
+      .map(
+        (name) =>
+          new Promise<void>((resolve) => {
+            const req = indexedDB.deleteDatabase(name);
+            req.onsuccess = () => resolve();
+            req.onerror = () => resolve();
+            req.onblocked = () => resolve();
+          })
+      )
+  );
+}
+
+async function resolveHandle(did: string): Promise<string | undefined> {
+  try {
+    const res = await fetch(
+      `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${encodeURIComponent(did)}`
+    );
+    if (!res.ok) return undefined;
+    const data = (await res.json()) as { handle?: string };
+    return data.handle;
+  } catch {
+    return undefined;
+  }
+}
+
+const PENDING_SIGNIN_KEY = "hah.signin.pending";
+
+export async function signIn(handle: string): Promise<void> {
+  const trimmed = handle.trim();
+  if (!trimmed) return;
+
+  // AT Proto requires 127.0.0.1 (not localhost) in loopback redirect URIs.
+  // If the user clicked sign-in while on a hostname that doesn't match our
+  // configured redirect_uri, navigate them to the correct one first and
+  // auto-resume the sign-in after the hop.
+  const { redirectUri } = getClientConfig();
+  try {
+    const redirectHost = new URL(redirectUri).hostname;
+    if (redirectHost !== location.hostname) {
+      sessionStorage.setItem(PENDING_SIGNIN_KEY, trimmed);
+      const target = new URL(location.href);
+      target.hostname = redirectHost;
+      target.port = new URL(redirectUri).port;
+      location.href = target.toString();
+      return;
+    }
+  } catch {
+    // fall through and try normal sign-in
+  }
+
+  await initAuth();
+  // If initAuth restored an existing session, we're already signed in —
+  // don't fire a second redirect to bsky.social
+  if (state.status === "signed-in") return;
+  if (!client) throw new Error("auth client not ready");
+  await client.signIn(trimmed, {
+    scope: "atproto transition:generic",
+  });
+  // signIn triggers a redirect; code past this rarely executes
+}
+
+export async function signOut(): Promise<void> {
+  try {
+    if (session && client) {
+      await client.revoke(session.did);
+    }
+  } catch (e) {
+    console.error("signOut error", e);
+  }
+  session = null;
+  agent = null;
+  try {
+    localStorage.removeItem(HAS_SESSION_KEY);
+  } catch {}
+  setState({ status: "signed-out" });
+}
+
+// Post a reply (or top-level post) to Bluesky.
+// Returns the URI of the new post.
+export async function postReply(
+  text: string,
+  reply?: ReplyTarget
+): Promise<string> {
+  if (!agent || !session) {
+    throw new Error("not signed in");
+  }
+  // TODO: optionally append a "sent from HAH.spencer.place" attribution to the
+  // text (likely behind a composer toggle, off by default — it publishes
+  // publicly on every reply and consumes characters). Decide UX before adding.
+  const record: Record<string, unknown> = {
+    $type: "app.bsky.feed.post",
+    text,
+    createdAt: new Date().toISOString(),
+  };
+  if (reply) {
+    record.reply = {
+      root: { uri: reply.rootUri, cid: reply.rootCid },
+      parent: { uri: reply.parentUri, cid: reply.parentCid },
+    };
+  }
+  const res = await agent.com.atproto.repo.createRecord({
+    repo: session.did,
+    collection: "app.bsky.feed.post",
+    record,
+  });
+  return res.data.uri;
+}

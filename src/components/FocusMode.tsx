@@ -10,7 +10,9 @@ interface FocusModeProps {
 
 export function FocusMode({ links, speed, isPaused }: FocusModeProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
-  const [autoAdvanceTimer, setAutoAdvanceTimer] = useState<NodeJS.Timeout | null>(null);
+  const [autoAdvanceTimer, setAutoAdvanceTimer] = useState<ReturnType<
+    typeof setTimeout
+  > | null>(null);
 
   // Calculate delay based on speed (inverse relationship)
   const delayMs = Math.max(1000, 5000 / speed); // 5s at 1x, 2.5s at 2x, 10s at 0.5x

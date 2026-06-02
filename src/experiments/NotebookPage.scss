@@ -1,0 +1,374 @@
+// Minimal notebook index. Faint field of social-media glyphs as the
+// background pattern, Web 1.0 numbered study list.
+
+.notebook {
+  --paper: #faf9f6;
+  --glyph: #d9d6cd;
+  --line: #e0ddd4;
+  --ink: #1d1d1a;
+  --ink-soft: #4f4c45;
+  --ink-faint: #8d8a80;
+  --accent: #1f6f6b;
+
+  min-height: 100vh;
+  background-color: var(--paper);
+  // Tiled SVG of @ # + ♥ glyphs, evenly scattered and faint. The tile is
+  // 88×88 with four glyphs offset so the field reads as a quiet mix.
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='88' height='88'%3E%3Cg fill='%23ebe9e2' font-family='monospace' font-size='14'%3E%3Ctext x='8' y='24'%3E%40%3C/text%3E%3Ctext x='52' y='24'%3E%2B%3C/text%3E%3Ctext x='8' y='68'%3E%23%3C/text%3E%3Ctext x='52' y='68'%3E%E2%99%A5%3C/text%3E%3C/g%3E%3C/svg%3E");
+  background-size: 88px 88px;
+  color: var(--ink);
+  font-family: "Newsreader", Georgia, "Times New Roman", serif;
+  display: flex;
+  justify-content: center;
+  padding: clamp(2.5rem, 8vw, 6rem) 1.5rem 4rem;
+}
+
+// The glyph field shudders once per laugh syllable — a quick shake that
+// restarts on every "ha" beat so it stays locked to the audio rhythm. Each
+// beat's direction, magnitude, and duration are randomized in JS via the
+// --sx/--sy/--sdur custom properties, so no two shakes look alike.
+.notebook--shudder {
+  animation: glyphShudder var(--sdur, 0.16s) ease-out;
+}
+
+@keyframes glyphShudder {
+  0% {
+    background-position: 0 0;
+  }
+  35% {
+    background-position: var(--sx1, 6px) var(--sy1, -5px);
+  }
+  70% {
+    background-position: var(--sx2, -5px) var(--sy2, 4px);
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+.notebook__page {
+  width: 100%;
+  max-width: 40rem;
+}
+
+/* ---- header ---- */
+.notebook__head {
+  margin-bottom: clamp(2.5rem, 6vw, 3.5rem);
+}
+
+.notebook__title {
+  font-weight: 400;
+  font-size: clamp(1.7rem, 4vw, 2.2rem);
+  line-height: 1.2;
+  letter-spacing: -0.01em;
+  margin-bottom: 0.35rem;
+}
+
+/* ---- HAH wordmark ---- */
+.hah {
+  position: relative;
+  display: inline-block;
+}
+
+.hah__word {
+  font: inherit;
+  font-weight: 600;
+  background: none;
+  border: none;
+  padding: 0;
+  margin: 0;
+  cursor: pointer;
+  color: inherit;
+  display: inline-flex;
+  line-height: 1;
+}
+
+.hah__letter {
+  position: relative;
+  display: inline-block;
+  transform-origin: 50% 80%;
+  transition: transform 0.12s ease;
+}
+
+// Hover tease: the letters can't sit still.
+.hah__word:hover .hah__letter {
+  animation: hahTwitch 0.5s ease-in-out infinite;
+}
+.hah__word:hover .hah__a {
+  animation-delay: 0.08s;
+}
+.hah__word:hover .hah__h:last-child {
+  animation-delay: 0.16s;
+}
+
+// Googly eyes sit on the two H's, hidden until hover/laugh.
+.hah__eye {
+  position: absolute;
+  top: 0.34em;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 0.32em;
+  height: 0.32em;
+  background: #fff;
+  border: 1px solid var(--ink);
+  border-radius: 50%;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+  pointer-events: none;
+}
+
+.hah__pupil {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0.14em;
+  height: 0.14em;
+  margin: -0.07em 0 0 -0.07em;
+  background: var(--ink);
+  border-radius: 50%;
+}
+
+// The mouth on the A, hidden until laughing.
+.hah__mouth {
+  position: absolute;
+  bottom: 0.14em;
+  left: 50%;
+  transform: translateX(-50%) scaleY(0);
+  width: 0.32em;
+  height: 0.26em;
+  background: #b3322b;
+  border-radius: 0 0 50% 50%;
+  transform-origin: top center;
+  transition: transform 0.18s ease;
+  pointer-events: none;
+}
+
+.hah__word:hover .hah__eye {
+  opacity: 1;
+}
+.hah__word:hover .hah__pupil {
+  animation: hahPupil 0.6s ease-in-out infinite;
+}
+
+// Full laugh on click.
+.hah--laughing {
+  .hah__eye {
+    opacity: 1;
+  }
+  .hah__pupil {
+    animation: hahPupil 0.3s ease-in-out infinite;
+  }
+  .hah__mouth {
+    transform: translateX(-50%) scaleY(1);
+  }
+  .hah__letter {
+    animation: hahBelly 0.28s ease-in-out infinite;
+  }
+  .hah__a {
+    animation-delay: 0.06s;
+  }
+  .hah__h:last-child {
+    animation-delay: 0.12s;
+  }
+}
+
+// The HAHAHA spill.
+.hah__spills {
+  position: absolute;
+  left: 50%;
+  top: 0.3em;
+  pointer-events: none;
+}
+
+.hah__spill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  font-weight: 700;
+  color: var(--accent);
+  white-space: nowrap;
+  animation: hahSpill 1.4s cubic-bezier(0.15, 0.6, 0.3, 1) forwards;
+  transform: translate(var(--dx), var(--dy)) rotate(var(--rot))
+    scale(var(--scale));
+}
+
+@keyframes hahTwitch {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0);
+  }
+  50% {
+    transform: translateY(-0.04em) rotate(-3deg);
+  }
+}
+
+@keyframes hahBelly {
+  0%,
+  100% {
+    transform: translateY(0) scaleY(1);
+  }
+  50% {
+    transform: translateY(-0.08em) scaleY(1.12) scaleX(0.94);
+  }
+}
+
+@keyframes hahPupil {
+  0%,
+  100% {
+    transform: translate(-0.03em, 0.02em);
+  }
+  50% {
+    transform: translate(0.03em, -0.02em);
+  }
+}
+
+@keyframes hahSpill {
+  0% {
+    opacity: 0;
+    transform: translate(0, 0) rotate(0) scale(0.4);
+  }
+  15% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), var(--dy)) rotate(var(--rot))
+      scale(var(--scale));
+  }
+}
+
+.notebook__byline {
+  font-size: 1rem;
+  line-height: 1.5;
+  color: var(--ink-soft);
+
+  a {
+    color: var(--accent);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+}
+
+.notebook__intro {
+  margin-top: 1.75rem;
+  max-width: 36rem;
+
+  p {
+    font-size: 1rem;
+    line-height: 1.65;
+    color: var(--ink-soft);
+
+    & + p {
+      margin-top: 1rem;
+    }
+  }
+}
+
+/* ---- studies section ---- */
+.notebook__section-title {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.7rem;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 1rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.notebook__entries {
+  margin: 0;
+  padding-left: 1.6rem;
+
+  li.entry {
+    font-size: 1.05rem;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    padding: 0.3rem 0;
+
+    &::marker {
+      color: var(--ink-faint);
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 0.85rem;
+    }
+  }
+}
+
+.entry__title {
+  color: var(--ink);
+  font-weight: 500;
+  text-decoration: underline;
+  text-decoration-color: var(--ink-faint);
+  text-underline-offset: 3px;
+  transition: text-decoration-color 0.15s ease, color 0.15s ease;
+
+  &:hover {
+    color: var(--accent);
+    text-decoration-color: var(--accent);
+  }
+}
+
+// Coming-soon entries are dimmed and not interactive.
+.entry--soon {
+  color: var(--ink-faint);
+}
+
+.entry__title--soon {
+  color: var(--ink-faint);
+  font-weight: 500;
+  text-decoration: none;
+  cursor: default;
+
+  &:hover {
+    color: var(--ink-faint);
+  }
+}
+
+.entry__desc {
+  color: var(--ink-soft);
+}
+
+.entry--soon .entry__desc {
+  color: var(--ink-faint);
+}
+
+.entry__note {
+  font-style: italic;
+  color: var(--ink-faint);
+}
+
+.entry__soon-tag {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+}
+
+/* ---- footer ---- */
+.notebook__foot {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: clamp(2.5rem, 6vw, 3.5rem);
+}
+
+.notebook__sig {
+  font-style: italic;
+  font-size: 1.05rem;
+  color: var(--ink-soft);
+}
+
+.notebook__rule {
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.notebook__meta {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  color: var(--ink-faint);
+}
