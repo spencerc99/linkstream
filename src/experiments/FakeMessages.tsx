@@ -296,42 +296,44 @@ function MessageEmbedView({ embed }: { embed: MessageEmbed }) {
     const quoted = quotedPostResolver.get(embed.uri);
     const appUrl = bskyAppUrlFromUri(embed.uri);
     return (
-      <a
-        className="embed-quote"
-        href={appUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
-      >
-        {quoted ? (
-          <>
-            <div className="quote-author">
-              {quoted.authorAvatar && (
-                <img
-                  className="quote-avatar"
-                  src={quoted.authorAvatar}
-                  alt=""
-                  loading="lazy"
-                />
-              )}
-              <div className="quote-author-names">
-                <span className="quote-name">
-                  {quoted.authorName || quoted.authorHandle}
-                </span>
-                <span className="quote-handle">@{quoted.authorHandle}</span>
+      <>
+        {/* The media belongs to the quoting post, so it sits above the quoted
+            card rather than inside it. */}
+        {embed.media && <MessageEmbedView embed={embed.media} />}
+        <a
+          className="embed-quote"
+          href={appUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {quoted ? (
+            <>
+              <div className="quote-author">
+                {quoted.authorAvatar && (
+                  <img
+                    className="quote-avatar"
+                    src={quoted.authorAvatar}
+                    alt=""
+                    loading="lazy"
+                  />
+                )}
+                <div className="quote-author-names">
+                  <span className="quote-name">
+                    {quoted.authorName || quoted.authorHandle}
+                  </span>
+                  <span className="quote-handle">@{quoted.authorHandle}</span>
+                </div>
               </div>
-            </div>
-            {quoted.text && <span className="quote-text">{quoted.text}</span>}
-          </>
-        ) : (
-          <span className="quote-pending">quoted post</span>
-        )}
-        {embed.media?.kind === "images" && (
-          <div className="quote-media">
-            <MessageEmbedView embed={embed.media} />
-          </div>
-        )}
-      </a>
+              {quoted.text && (
+                <span className="quote-text">{quoted.text}</span>
+              )}
+            </>
+          ) : (
+            <span className="quote-pending">quoted post</span>
+          )}
+        </a>
+      </>
     );
   }
 

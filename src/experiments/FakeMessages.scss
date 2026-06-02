@@ -711,13 +711,16 @@
           position: relative;
           flex-basis: 100%;
           display: flex;
+          // A quote-with-media stacks the media above the quote card.
+          flex-direction: column;
+          gap: 4px;
         }
 
         &.incoming .message-embed {
-          justify-content: flex-start;
+          align-items: flex-start;
         }
         &.outgoing .message-embed {
-          justify-content: flex-end;
+          align-items: flex-end;
         }
 
         .embed-images {
@@ -913,10 +916,6 @@
             font-size: 13px;
             color: #8e8e93;
             font-style: italic;
-          }
-
-          .quote-media {
-            margin-top: 4px;
           }
         }
 
