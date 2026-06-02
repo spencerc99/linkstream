@@ -55,6 +55,17 @@ function colorForDid(did: string): string {
 
 // ---- Shared types ---------------------------------------------------------
 
+// Image or link-card attached to a post, rendered inline in the bubble.
+type MessageEmbed =
+  | { kind: "images"; images: { url: string; alt?: string }[] }
+  | {
+      kind: "external";
+      uri: string;
+      title?: string;
+      description?: string;
+      thumb?: string;
+    };
+
 interface Message {
   id: string;
   text: string;
@@ -65,6 +76,7 @@ interface Message {
   sourceRkey?: string;
   sourceCid?: string;
   sourceUri?: string;
+  embed?: MessageEmbed;
   // For group chats: which participant authored this message
   authorDid?: string;
   authorName?: string;
@@ -84,8 +96,6 @@ interface Conversation {
   // For groups: root post URI + CID, needed to construct real replies
   rootUri?: string;
   rootCid?: string;
-  // For accounts: thread roots this account has participated in
-  trackedThreads?: Set<string>;
   messages: Message[];
   unreadCount: number;
   isTyping: boolean;
@@ -103,6 +113,7 @@ interface PendingDelivery {
   did: string;
   rkey: string;
   cid?: string;
+  embed?: MessageEmbed;
   // For groups
   authorDid?: string;
 }
@@ -122,6 +133,51 @@ function baseTextFilter(text: string, langsDeclared: boolean): string | null {
 }
 
 
+// Construct the CDN URL for an image blob in a post record. Use "fullsize" for
+// inline display and "thumbnail" for small link-card previews.
+function imageCdnUrl(
+  did: string,
+  blobRef: any,
+  size: "fullsize" | "thumbnail" = "fullsize"
+): string | null {
+  const cid = blobRef?.ref?.$link ?? blobRef?.ref?.toString?.();
+  if (typeof cid !== "string" || !cid) return null;
+  return `https://cdn.bsky.app/img/feed_${size}/plain/${did}/${cid}@jpeg`;
+}
+
+// Pull a renderable image or link-card embed out of a post record, if any.
+function extractEmbed(record: any, did: string): MessageEmbed | undefined {
+  // recordWithMedia nests the media embed under .media
+  const embed = record?.embed?.media ?? record?.embed;
+  const type = embed?.$type as string | undefined;
+  if (!type) return undefined;
+
+  if (type === "app.bsky.embed.images" && Array.isArray(embed.images)) {
+    const images = embed.images
+      .map((img: any) => {
+        const url = imageCdnUrl(did, img.image);
+        return url ? { url, alt: img.alt } : null;
+      })
+      .filter(Boolean) as { url: string; alt?: string }[];
+    if (images.length > 0) return { kind: "images", images };
+  }
+
+  if (type === "app.bsky.embed.external" && embed.external?.uri) {
+    const ext = embed.external;
+    return {
+      kind: "external",
+      uri: ext.uri,
+      title: ext.title || undefined,
+      description: ext.description || undefined,
+      thumb: ext.thumb
+        ? imageCdnUrl(did, ext.thumb, "thumbnail") || undefined
+        : undefined,
+    };
+  }
+
+  return undefined;
+}
+
 function usableAnyPost(data: any): {
   text: string;
   did: string;
@@ -129,46 +185,91 @@ function usableAnyPost(data: any): {
   cid?: string;
   replyRootUri?: string;
   replyRootCid?: string;
+  embed?: MessageEmbed;
 } | null {
   const record = data.commit?.record;
-  if (!record?.text) return null;
-  if (record.embed) return null;
+  if (!record) return null;
+
+  const did = data.did as string | undefined;
+  if (!did) return null;
+
+  const embed = extractEmbed(record, did);
 
   if (Array.isArray(record.langs) && record.langs.length > 0) {
     if (!record.langs.some((l: string) => l.toLowerCase().startsWith("en"))) {
       return null;
     }
   }
-  const text = baseTextFilter(record.text, !!record.langs);
-  if (!text) return null;
 
-  const did = data.did as string | undefined;
+  // Allow image posts with no text; otherwise require text that passes filter.
+  let text = "";
+  if (record.text) {
+    const filtered = baseTextFilter(record.text, !!record.langs);
+    if (!filtered) return null;
+    text = filtered;
+  } else if (!embed || embed.kind !== "images") {
+    return null;
+  }
+
   const rkey = data.commit?.rkey as string | undefined;
   const cid = data.commit?.cid as string | undefined;
-  if (!did || !rkey) return null;
+  if (!rkey) return null;
   const replyRootUri = record.reply?.root?.uri as string | undefined;
   const replyRootCid = record.reply?.root?.cid as string | undefined;
-  return { text, did, rkey, cid, replyRootUri, replyRootCid };
+  return { text, did, rkey, cid, replyRootUri, replyRootCid, embed };
 }
 
 function postUri(did: string, rkey: string): string {
   return `at://${did}/app.bsky.feed.post/${rkey}`;
 }
 
+// Renders an image or link-card embed inside a message bubble.
+function MessageEmbedView({ embed }: { embed: MessageEmbed }) {
+  if (embed.kind === "images") {
+    return (
+      <div
+        className={`embed-images count-${Math.min(embed.images.length, 4)}`}
+      >
+        {embed.images.map((img, i) => (
+          <img key={i} src={img.url} alt={img.alt || ""} loading="lazy" />
+        ))}
+      </div>
+    );
+  }
+
+  let host = "";
+  try {
+    host = new URL(embed.uri).hostname.replace(/^www\./, "");
+  } catch {
+    host = embed.uri;
+  }
+  return (
+    <a
+      className="embed-external"
+      href={embed.uri}
+      target="_blank"
+      rel="noopener noreferrer"
+      onClick={(e) => e.stopPropagation()}
+    >
+      {embed.thumb && (
+        <img className="embed-thumb" src={embed.thumb} alt="" loading="lazy" />
+      )}
+      <div className="embed-meta">
+        <span className="embed-host">{host}</span>
+        {embed.title && <span className="embed-title">{embed.title}</span>}
+        {embed.description && (
+          <span className="embed-desc">{embed.description}</span>
+        )}
+      </div>
+    </a>
+  );
+}
+
 // ---- Component ------------------------------------------------------------
 
-const MAX_ACCOUNT_CONVOS = 40;
-const MAX_GROUP_CONVOS = 30;
+const MAX_ACCOUNT_CONVOS = 500;
+const MAX_GROUP_CONVOS = 500;
 const MAX_MESSAGES_PER_CONVO = 120;
-const MAX_TRACKED_THREADS_PER_ACCOUNT = 10;
-
-// Reverse index: which account conversations track which thread roots.
-// Lets us route incoming firehose replies to the right account convos
-// without scanning all conversations on every post.
-const threadToAccounts = new Map<string, Set<string>>();
-
-// Dedup: parent posts we've already fetched for context
-const fetchedParents = new Set<string>();
 
 const BSKY_APPVIEW = "https://public.api.bsky.app";
 
@@ -299,7 +400,10 @@ export function FakeMessages() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [accountsConvos, groupsConvos, mode]);
 
-  // ---- Delivery ticker: drains pendingQueue at a mode-dependent rate ----
+  // ---- Delivery ticker: drains pendingQueue, leaving a brief typing beat ----
+  // Each message shows its "typing" indicator for a moment before landing. The
+  // delay scales down as the backlog grows so a flood of messages keeps
+  // arriving rapidly (overwhelming) instead of stalling as stuck "typing".
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout>;
     const tick = () => {
@@ -307,7 +411,14 @@ export function FakeMessages() {
         const msg = pendingQueue.current.shift()!;
         deliverMessage(msg);
       }
-      timeout = setTimeout(tick, 120 + Math.random() * 200);
+      const backlog = pendingQueue.current.length;
+      const delay =
+        backlog > 8
+          ? 120
+          : backlog > 3
+            ? 200
+            : 250 + Math.random() * 250;
+      timeout = setTimeout(tick, delay);
     };
     tick();
     return () => clearTimeout(timeout);
@@ -343,6 +454,7 @@ export function FakeMessages() {
           sourceRkey: p.rkey,
           sourceCid: p.cid,
           sourceUri: postUri(p.did, p.rkey),
+          embed: p.embed,
           authorDid: p.authorDid,
           authorName,
           authorColor,
@@ -364,96 +476,16 @@ export function FakeMessages() {
 
   // ---- Mode-specific firehose handling ---------------------------------
 
-  // Fetch a single parent post for inline context in an account's conversation
-  const fetchParentContext = useCallback(
-    async (parentUri: string, accountDid: string) => {
-      const key = `${accountDid}:${parentUri}`;
-      if (fetchedParents.has(key)) return;
-      fetchedParents.add(key);
-
-      try {
-        const res = await fetch(
-          `${BSKY_APPVIEW}/xrpc/app.bsky.feed.getPosts?uris=${encodeURIComponent(parentUri)}`
-        );
-        if (!res.ok) return;
-        const data = (await res.json()) as {
-          posts?: Array<{
-            uri: string;
-            cid: string;
-            author: {
-              did: string;
-              handle: string;
-              displayName?: string;
-              avatar?: string;
-            };
-            record: { text?: string; createdAt?: string };
-          }>;
-        };
-        const parent = data.posts?.[0];
-        if (!parent || !parent.record?.text) return;
-
-        profileResolver.hydrate({
-          did: parent.author.did,
-          handle: parent.author.handle,
-          displayName: parent.author.displayName,
-          avatar: parent.author.avatar,
-        });
-
-        const ts = parent.record.createdAt
-          ? new Date(parent.record.createdAt).getTime()
-          : Date.now() - 1000;
-
-        // Insert directly into the account's conversation (no pending queue —
-        // parent is context, not a new incoming message)
-        setAccountsConvos((prev) => {
-          const next = new Map(prev);
-          const conv = next.get(accountDid);
-          if (!conv) return prev;
-          // Dedup
-          if (conv.messages.some((m) => m.id === `parent-${parent.uri}`)) {
-            return prev;
-          }
-          const msgs = [
-            ...conv.messages,
-            {
-              id: `parent-${parent.uri}`,
-              text: parent.record.text!,
-              timestamp: ts,
-              fromContact: true,
-              sourceDid: parent.author.did,
-              sourceRkey: rkeyFromUri(parent.uri),
-              sourceCid: parent.cid,
-              sourceUri: parent.uri,
-              authorDid: parent.author.did,
-              authorName:
-                parent.author.displayName || parent.author.handle,
-              authorColor: colorForDid(parent.author.did),
-            },
-          ]
-            .sort((a, b) => a.timestamp - b.timestamp)
-            .slice(-MAX_MESSAGES_PER_CONVO);
-          next.set(accountDid, { ...conv, messages: msgs });
-          return next;
-        });
-      } catch (e) {
-        console.error("fetchParentContext failed", e);
-      }
-    },
-    []
-  );
-
   const handleAccountsFirehose = useCallback(
     (data: any) => {
-      // Accept ALL posts (including replies) — usableAnyPost instead of
-      // usableNonReplyPost, so we see the account's reply activity
       const post = usableAnyPost(data);
       if (!post) return;
+      // Fresh posts only: a reply was directed at someone else, so it reads as
+      // a non-sequitur when shown as that account texting you directly.
+      if (post.replyRootUri) return;
       profileResolver.get(post.did);
 
-      const isReply = !!post.replyRootUri;
-      const threadRoot = post.replyRootUri || postUri(post.did, post.rkey);
-
-      // ── 1. Route post to the author's own conversation ──────────────
+      // Route post to the author's own conversation
       setAccountsConvos((prev) => {
         const next = new Map(prev);
         const existing = next.get(post.did);
@@ -463,34 +495,17 @@ export function FakeMessages() {
         const subtitle = prof?.handle ? `@${prof.handle}` : undefined;
 
         if (existing) {
-          // If this is a reply, track the thread root on this conversation
-          let tracked = existing.trackedThreads || new Set<string>();
-          if (isReply) {
-            tracked = new Set(tracked);
-            // Cap tracked threads per account
-            if (tracked.size >= MAX_TRACKED_THREADS_PER_ACCOUNT) {
-              const oldest = tracked.values().next().value;
-              if (oldest !== undefined) {
-                tracked.delete(oldest);
-                threadToAccounts.get(oldest)?.delete(post.did);
-              }
-            }
-            tracked.add(threadRoot);
-          }
           next.set(post.did, {
             ...existing,
             displayName,
             subtitle,
             avatarUrl: prof?.avatar,
-            trackedThreads: tracked,
             isTyping: true,
           });
         } else {
           if (next.size >= MAX_ACCOUNT_CONVOS) {
             evictOldestUnlocked(next);
           }
-          const tracked = new Set<string>();
-          if (isReply) tracked.add(threadRoot);
           next.set(post.did, {
             id: post.did,
             kind: "accounts",
@@ -499,7 +514,6 @@ export function FakeMessages() {
             avatarColor: colorForDid(post.did),
             avatarInitial: (displayName[0] || "?").toUpperCase(),
             avatarUrl: prof?.avatar,
-            trackedThreads: tracked,
             messages: [],
             unreadCount: 0,
             isTyping: true,
@@ -508,20 +522,6 @@ export function FakeMessages() {
         }
         return next;
       });
-
-      // Update reverse index
-      if (isReply) {
-        if (!threadToAccounts.has(threadRoot)) {
-          threadToAccounts.set(threadRoot, new Set());
-        }
-        threadToAccounts.get(threadRoot)!.add(post.did);
-
-        // Fetch parent post for inline context (fire-and-forget)
-        const parentUri = data.commit?.record?.reply?.parent?.uri;
-        if (typeof parentUri === "string") {
-          void fetchParentContext(parentUri, post.did);
-        }
-      }
 
       // Queue this post for delivery into the author's conversation
       pendingQueue.current.push({
@@ -532,38 +532,10 @@ export function FakeMessages() {
         did: post.did,
         rkey: post.rkey,
         cid: post.cid,
+        embed: post.embed,
       });
-
-      // ── 2. Route reply to other accounts tracking this thread ──────
-      if (isReply) {
-        const trackers = threadToAccounts.get(threadRoot);
-        if (trackers) {
-          for (const trackerDid of trackers) {
-            if (trackerDid === post.did) continue; // already handled above
-            profileResolver.get(post.did);
-            pendingQueue.current.push({
-              mode: "accounts",
-              conversationId: trackerDid,
-              text: post.text,
-              timestamp: Date.now(),
-              did: post.did,
-              rkey: post.rkey,
-              cid: post.cid,
-              authorDid: post.did,
-            });
-            // Set typing indicator on the tracker's conversation
-            setAccountsConvos((prev) => {
-              const next = new Map(prev);
-              const conv = next.get(trackerDid);
-              if (!conv) return prev;
-              next.set(trackerDid, { ...conv, isTyping: true });
-              return next;
-            });
-          }
-        }
-      }
     },
-    [fetchParentContext]
+    []
   );
 
   const backfillThread = useCallback(async (rootUri: string) => {
@@ -755,11 +727,19 @@ export function FakeMessages() {
       }
 
       const now = Date.now();
-      // Per-mode intake throttle:
-      // - Accounts: near-unthrottled so the sidebar fills fast
+      // Per-mode intake throttle. The firehose supplies ~50 eligible fresh
+      // posts/sec; without this the sidebar would be unusably fast. Kept low so
+      // messages still pour in. The delivery ticker (caps ~8/sec under load)
+      // and backpressure guard below keep intake drainable.
+      // - Accounts: a new contact roughly every ~150ms (~6.5/sec)
       // - Groups: medium so threads have room to accumulate replies
-      const minGap = modeRef.current === "accounts" ? 60 : 150;
+      const minGap = modeRef.current === "accounts" ? 150 : 400;
       if (now - lastFirehoseAt.current < minGap) return;
+
+      // Backpressure: bound the delivery backlog. Past this, drop new intake
+      // rather than queuing messages that would land long after the firehose
+      // post that spawned them (and never let the queue grow without limit).
+      if (pendingQueue.current.length > 20) return;
 
       switch (modeRef.current) {
         case "accounts":
@@ -1050,7 +1030,7 @@ export function FakeMessages() {
     <div className="fake-messages">
       <div className="messages-sidebar">
         <div className="sidebar-header">
-          <Link to="/HAH" className="back-button">
+          <Link to="/" className="back-button">
             &lsaquo;
           </Link>
           <h1>Messages</h1>
@@ -1264,23 +1244,33 @@ export function FakeMessages() {
                     )}
                     <div
                       className={`message-row ${msg.fromContact ? "incoming" : "outgoing"}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowTapback(showTapback === msg.id ? null : msg.id);
+                      }}
                     >
-                      <div
-                        className={`message-bubble ${msg.fromContact ? "incoming" : "outgoing"}`}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setShowTapback(
-                            showTapback === msg.id ? null : msg.id
-                          );
-                        }}
-                      >
-                        {msg.text}
-                        {msg.reaction && (
-                          <span className="message-reaction">
-                            {msg.reaction}
-                          </span>
-                        )}
-                      </div>
+                      {(msg.text || !msg.embed) && (
+                        <div
+                          className={`message-bubble ${msg.fromContact ? "incoming" : "outgoing"}`}
+                        >
+                          <span className="message-text">{msg.text}</span>
+                          {!msg.embed && msg.reaction && (
+                            <span className="message-reaction">
+                              {msg.reaction}
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {msg.embed && (
+                        <div className="message-embed">
+                          <MessageEmbedView embed={msg.embed} />
+                          {msg.reaction && (
+                            <span className="message-reaction">
+                              {msg.reaction}
+                            </span>
+                          )}
+                        </div>
+                      )}
                       {msg.fromContact && msg.sourceDid && msg.sourceRkey && (
                         <a
                           className="source-link"
@@ -1442,7 +1432,18 @@ function renderPreview(conv: Conversation) {
       : !last.fromContact
         ? <span className="you-prefix">You: </span>
         : null;
-  const snippet = last.text.slice(0, 35) + (last.text.length > 35 ? "\u2026" : "");
+  // When the message has no text, describe its attachment like iMessage does.
+  let snippet: string;
+  if (last.text) {
+    snippet = last.text.slice(0, 35) + (last.text.length > 35 ? "\u2026" : "");
+  } else if (last.embed?.kind === "images") {
+    const n = last.embed.images.length;
+    snippet = `\ud83d\udcf7 ${n} ${n === 1 ? "Image" : "Images"}`;
+  } else if (last.embed?.kind === "external") {
+    snippet = "\ud83d\udd17 Link";
+  } else {
+    snippet = "";
+  }
   return (
     <>
       {prefix}

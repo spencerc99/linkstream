@@ -8,6 +8,9 @@ import {
   generateHaikuComments,
   HAIKU_WORKER_URL,
 } from "./haikuComments";
+import { extractSubject, scoreRelevance, type Subject } from "./topicMatch";
+import { resolveCommentAuthor } from "./userIdentity";
+import { profileResolver } from "./profileResolver";
 import {
   ReplyIcon,
   RetweetIcon,
@@ -25,13 +28,17 @@ import "./FakePoster.scss";
 
 dayjs.extend(relativeTime);
 
-type CommentMode = "firehose" | "haiku" | "local";
+type CommentMode = "firehose" | "relevant" | "haiku" | "local";
 
 interface PendingComment {
   text: string;
   source: CommentMode;
   did?: string;
   rkey?: string;
+  // Identity baked in by the generator (local LLM); absent for real posts,
+  // which resolve their author from did at render time.
+  name?: string;
+  handle?: string;
 }
 
 const MODE_STORAGE_KEY = "hah.poster.mode";
@@ -39,7 +46,12 @@ const MODE_STORAGE_KEY = "hah.poster.mode";
 function loadStoredMode(): CommentMode {
   if (typeof localStorage === "undefined") return "firehose";
   const raw = localStorage.getItem(MODE_STORAGE_KEY);
-  if (raw === "haiku" || raw === "local" || raw === "firehose") return raw;
+  // Haiku is only available when its worker URL is configured (i.e. not in
+  // public builds that omit it); fall back so the stored mode isn't orphaned.
+  if (raw === "haiku") {
+    return import.meta.env.VITE_HAIKU_WORKER_URL ? "haiku" : "firehose";
+  }
+  if (raw === "local" || raw === "firehose" || raw === "relevant") return raw;
   return "firehose";
 }
 
@@ -73,12 +85,15 @@ function formatCount(n: number): string {
 
 interface TweetComment {
   id: string;
-  user: (typeof FAKE_USERS)[0];
   text: string;
   timestamp: number;
   likes: number;
   sourceDid?: string;
   sourceRkey?: string;
+  // Generator-supplied identity (local LLM); absent comments resolve from
+  // sourceDid (real posts) or fall back to a procedural identity.
+  authorName?: string;
+  authorHandle?: string;
 }
 
 interface Tweet {
@@ -183,8 +198,15 @@ export function FakePoster() {
   const [showNotifications, setShowNotifications] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
   const [mode, setMode] = useState<CommentMode>(loadStoredMode);
-  const [haikuError, setHaikuError] = useState<string | null>(null);
+  const [modeError, setModeError] = useState<string | null>(null);
   const [expandedTweets, setExpandedTweets] = useState<Set<string>>(new Set());
+  // Bumped when a real Bluesky profile resolves, to re-render comment authors.
+  const [, setProfileTick] = useState(0);
+
+  useEffect(
+    () => profileResolver.subscribe(() => setProfileTick((t) => t + 1)),
+    []
+  );
 
   const toggleExpanded = (tweetId: string) => {
     setExpandedTweets((prev) => {
@@ -197,7 +219,13 @@ export function FakePoster() {
   const commentQueue = useRef<PendingComment[]>([]);
   const engagementTimers = useRef<Map<string, number>>(new Map());
   const modeRef = useRef(mode);
+  // Subjects extracted from currently-displayed tweets, keyed by tweet id, so
+  // the firehose handler can route topically-matching posts to the right tweet.
+  const tweetSubjects = useRef<Map<string, Subject>>(new Map());
   const localLLM = useLocalLLM();
+
+  // Minimum overlap score a firehose post needs to count as on-topic.
+  const RELEVANCE_THRESHOLD = 1;
 
   useEffect(() => {
     modeRef.current = mode;
@@ -208,11 +236,52 @@ export function FakePoster() {
     }
   }, [mode]);
 
-  // Buffer firehose posts (only when firehose mode is active)
-  const handleFirehose = useCallback((data: any) => {
-    if (modeRef.current !== "firehose") return;
-    const post = isUsablePost(data);
-    if (post) {
+  // Route a topically-relevant firehose post into the best-matching live
+  // tweet's private pool. Returns true when it found a home.
+  const routeRelevantPost = useCallback((post: SourcePost): boolean => {
+    let bestTweetId: string | null = null;
+    let bestScore = 0;
+    tweetSubjects.current.forEach((subject, tweetId) => {
+      const score = scoreRelevance(subject, post.text);
+      if (score > bestScore) {
+        bestScore = score;
+        bestTweetId = tweetId;
+      }
+    });
+
+    if (bestTweetId === null || bestScore < RELEVANCE_THRESHOLD) return false;
+
+    const matchId = bestTweetId;
+    const pending: PendingComment = {
+      text: post.text,
+      source: "relevant",
+      did: post.did,
+      rkey: post.rkey,
+    };
+    setTweets((prev) =>
+      prev.map((t) =>
+        t.id === matchId
+          ? { ...t, privatePool: [...t.privatePool, pending].slice(-40) }
+          : t
+      )
+    );
+    return true;
+  }, []);
+
+  // Buffer firehose posts. In firehose mode everything goes to the shared
+  // queue; in relevant mode only topically-matching posts are kept.
+  const handleFirehose = useCallback(
+    (data: any) => {
+      const activeMode = modeRef.current;
+      if (activeMode !== "firehose" && activeMode !== "relevant") return;
+      const post = isUsablePost(data);
+      if (!post) return;
+
+      if (activeMode === "relevant") {
+        routeRelevantPost(post);
+        return;
+      }
+
       commentQueue.current.push({
         text: post.text,
         source: "firehose",
@@ -222,8 +291,9 @@ export function FakePoster() {
       if (commentQueue.current.length > 100) {
         commentQueue.current = commentQueue.current.slice(-50);
       }
-    }
-  }, []);
+    },
+    [routeRelevantPost]
+  );
 
   useJetStream({
     wantedCollections: ["app.bsky.feed.post"],
@@ -267,12 +337,13 @@ export function FakePoster() {
             if (pending) {
               newComment = {
                 id: `comment-${Date.now()}-${Math.random()}`,
-                user: randomUser(),
                 text: pending.text,
                 timestamp: Date.now(),
                 likes: Math.floor(Math.random() * 10),
                 sourceDid: pending.did,
                 sourceRkey: pending.rkey,
+                authorName: pending.name,
+                authorHandle: pending.handle,
               };
             }
           }
@@ -309,12 +380,18 @@ export function FakePoster() {
             setUnreadCount((c) => c + 1);
           }
           if (newComment) {
+            const author = resolveCommentAuthor({
+              sourceDid: newComment.sourceDid,
+              name: newComment.authorName,
+              handle: newComment.authorHandle,
+              seed: newComment.id,
+            });
             setNotifications((n) =>
               [
                 {
                   id: `notif-${Date.now()}-${Math.random()}`,
                   type: "reply" as const,
-                  user: newComment!.user,
+                  user: { name: author.name, handle: author.handle },
                   text: newComment!.text,
                   timestamp: Date.now(),
                 },
@@ -377,22 +454,38 @@ export function FakePoster() {
     setTweets((prev) => [newTweet, ...prev]);
     engagementTimers.current.set(newTweet.id, 0);
     setComposerText("");
-    setHaikuError(null);
+    setModeError(null);
 
     const activeMode = modeRef.current;
+    if (activeMode === "relevant") {
+      const subject = extractSubject(postText);
+      tweetSubjects.current.set(tweetId, subject);
+      // Only the most recent posts actively pull in matching firehose posts.
+      if (tweetSubjects.current.size > 8) {
+        const oldest = tweetSubjects.current.keys().next().value;
+        if (oldest) tweetSubjects.current.delete(oldest);
+      }
+      if (subject.keywords.length === 0) {
+        setModeError(
+          "No clear subject found — try a post with a concrete noun."
+        );
+      }
+    }
     if (activeMode === "haiku") {
       const comments = await generateHaikuComments(postText, 25);
       if (comments.length === 0) {
-        setHaikuError(
+        setModeError(
           HAIKU_WORKER_URL
             ? "Haiku returned no comments (check Worker logs)"
             : "VITE_HAIKU_WORKER_URL is not set"
         );
         return;
       }
-      const pending = comments.map((text) => ({
-        text,
+      const pending = comments.map((c) => ({
+        text: c.text,
         source: "haiku" as const,
+        name: c.name,
+        handle: c.handle,
       }));
       setTweets((prev) =>
         prev.map((t) =>
@@ -404,9 +497,11 @@ export function FakePoster() {
     } else if (activeMode === "local") {
       if (localLLM.status !== "ready") return;
       const comments = await localLLM.generate(postText, 20);
-      const pending = comments.map((text) => ({
-        text,
+      const pending = comments.map((c) => ({
+        text: c.text,
         source: "local" as const,
+        name: c.name,
+        handle: c.handle,
       }));
       setTweets((prev) =>
         prev.map((t) =>
@@ -421,7 +516,7 @@ export function FakePoster() {
   const handleModeChange = (next: CommentMode) => {
     setMode(next);
     commentQueue.current = [];
-    setHaikuError(null);
+    setModeError(null);
     if (next === "local" && localLLM.status === "idle") {
       void localLLM.load();
     }
@@ -452,7 +547,7 @@ export function FakePoster() {
   return (
     <div className="fake-poster">
       <nav className="poster-sidebar">
-        <Link to="/HAH" className="nav-item back" aria-label="Back to HAH">
+        <Link to="/" className="nav-item back" aria-label="Back to index">
           <BackIcon />
         </Link>
         <div className="nav-logo">{"𝕏"}</div>
@@ -491,18 +586,24 @@ export function FakePoster() {
             </button>
             <button
               role="tab"
-              aria-selected={mode === "haiku"}
-              className={`mode-tab ${mode === "haiku" ? "active" : ""}`}
-              onClick={() => handleModeChange("haiku")}
-              disabled={!HAIKU_WORKER_URL}
-              title={
-                HAIKU_WORKER_URL
-                  ? "Comments generated by Claude Haiku"
-                  : "Set VITE_HAIKU_WORKER_URL to enable"
-              }
+              aria-selected={mode === "relevant"}
+              className={`mode-tab ${mode === "relevant" ? "active" : ""}`}
+              onClick={() => handleModeChange("relevant")}
+              title="Firehose posts that loosely match your post's subject"
             >
-              Haiku
+              Relevant
             </button>
+            {HAIKU_WORKER_URL && (
+              <button
+                role="tab"
+                aria-selected={mode === "haiku"}
+                className={`mode-tab ${mode === "haiku" ? "active" : ""}`}
+                onClick={() => handleModeChange("haiku")}
+                title="Comments generated by Claude Haiku"
+              >
+                Haiku
+              </button>
+            )}
             <button
               role="tab"
               aria-selected={mode === "local"}
@@ -549,14 +650,15 @@ export function FakePoster() {
             This browser doesn't support WebGPU. Try Chrome or Edge.
           </div>
         )}
-        {mode === "haiku" && !HAIKU_WORKER_URL && (
-          <div className="mode-status error">
-            Set <code>VITE_HAIKU_WORKER_URL</code> in <code>.env.local</code>{" "}
-            after deploying the worker.
-          </div>
+        {(mode === "haiku" || mode === "relevant") && modeError && (
+          <div className="mode-status error">{modeError}</div>
         )}
-        {mode === "haiku" && haikuError && (
-          <div className="mode-status error">{haikuError}</div>
+        {mode === "relevant" && (
+          <div className="mode-status">
+            Comments are live firehose posts that loosely match your post's
+            subject. Posts with a concrete subject ("ice cream", "the election")
+            match best.
+          </div>
         )}
 
         <div className="poster-scroll">
@@ -640,22 +742,41 @@ export function FakePoster() {
                       {(expandedTweets.has(tweet.id)
                         ? tweet.comments
                         : tweet.comments.slice(-5)
-                      ).map((comment) => (
+                      ).map((comment) => {
+                        const author = resolveCommentAuthor({
+                          sourceDid: comment.sourceDid,
+                          name: comment.authorName,
+                          handle: comment.authorHandle,
+                          seed: comment.id,
+                        });
+                        return (
                         <div key={comment.id} className="comment">
                           <div
                             className="comment-avatar"
-                            style={{
-                              backgroundColor: `hsl(${comment.user.handle.length * 40}, 55%, 45%)`,
-                            }}
+                            style={
+                              author.avatar
+                                ? undefined
+                                : {
+                                    backgroundColor: `hsl(${author.handle.length * 40}, 55%, 45%)`,
+                                  }
+                            }
                           >
-                            {comment.user.name[0]}
+                            {author.avatar ? (
+                              <img
+                                src={author.avatar}
+                                alt=""
+                                className="comment-avatar-img"
+                              />
+                            ) : (
+                              author.name[0]
+                            )}
                           </div>
                           <div className="comment-content">
                             <span className="comment-name">
-                              {comment.user.name}
+                              {author.name}
                             </span>
                             <span className="comment-handle">
-                              @{comment.user.handle}
+                              @{author.handle}
                             </span>
                             {comment.sourceDid && comment.sourceRkey && (
                               <a
@@ -671,7 +792,8 @@ export function FakePoster() {
                             <p className="comment-text">{comment.text}</p>
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                       {tweet.comments.length > 5 && (
                         <button
                           className="more-comments"

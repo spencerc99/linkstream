@@ -513,6 +513,8 @@
       background: #fff;
       display: flex;
       flex-direction: column;
+      // Container context so image cards can size to the pane width.
+      container-type: inline-size;
 
       .author-label {
         font-size: 11px;
@@ -538,6 +540,7 @@
 
       .message-row {
         display: flex;
+        flex-wrap: wrap;
         position: relative;
         margin-bottom: 2px;
         align-items: flex-end;
@@ -549,6 +552,167 @@
 
         &.outgoing {
           justify-content: flex-end;
+        }
+
+        // An embed (image / link card) renders as its own row without the
+        // bubble background, matching iMessage. When a message has both text
+        // and an embed, force the embed onto its own line below the bubble.
+        .message-embed {
+          position: relative;
+          flex-basis: 100%;
+          display: flex;
+        }
+
+        &.incoming .message-embed {
+          justify-content: flex-start;
+        }
+        &.outgoing .message-embed {
+          justify-content: flex-end;
+        }
+
+        .embed-images {
+          // Single image: show at natural aspect ratio, like iMessage.
+          &.count-1 {
+            display: grid;
+            grid-template-columns: 1fr;
+            border-radius: 18px;
+            overflow: hidden;
+            max-width: 65%;
+
+            img {
+              width: 100%;
+              height: auto;
+              max-height: 380px;
+              object-fit: cover;
+              display: block;
+            }
+          }
+
+          // Multiple images: a fanned spread of slightly tilted photo cards,
+          // like iMessage. Each overlaps the previous a little.
+          &.count-2,
+          &.count-3,
+          &.count-4 {
+            display: flex;
+            align-items: center;
+            padding: 8px 0;
+
+            // Cards size to the message pane (cqw = % of container width) so
+            // the fan fills ~the same width regardless of count, capped so it
+            // stays sane on very wide panes. Bigger cards when there are fewer.
+            img {
+              object-fit: cover;
+              border-radius: 14px;
+              border: 3px solid #fff;
+              box-shadow: 0 2px 6px rgba(0, 0, 0, 0.25);
+              flex-shrink: 0;
+              display: block;
+              width: var(--card);
+              height: var(--card);
+
+              &:not(:first-child) {
+                margin-left: calc(var(--card) * -0.28);
+              }
+            }
+
+            &.count-2 {
+              --card: min(40cqw, 300px);
+            }
+            &.count-3 {
+              --card: min(29cqw, 230px);
+            }
+            &.count-4 {
+              --card: min(22cqw, 190px);
+            }
+
+            // Alternating tilt so the stack fans out.
+            img:nth-child(1) {
+              transform: rotate(-5deg);
+            }
+            img:nth-child(2) {
+              transform: rotate(4deg);
+              z-index: 1;
+            }
+            img:nth-child(3) {
+              transform: rotate(-3deg);
+              z-index: 2;
+            }
+            img:nth-child(4) {
+              transform: rotate(6deg);
+              z-index: 3;
+            }
+          }
+        }
+
+        // The fanned cards lift on hover for a playful peek.
+        &.outgoing .embed-images img:hover,
+        &.incoming .embed-images img:hover {
+          transform: translateY(-4px) rotate(0deg) !important;
+          z-index: 10 !important;
+          transition: transform 0.15s ease;
+        }
+
+        .embed-external {
+          display: block;
+          border-radius: 16px;
+          overflow: hidden;
+          text-decoration: none;
+          color: inherit;
+          max-width: 240px;
+          background: #f2f2f7;
+          border: 1px solid rgba(0, 0, 0, 0.1);
+
+          .embed-thumb {
+            width: 100%;
+            max-height: 140px;
+            object-fit: cover;
+            display: block;
+          }
+
+          .embed-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            padding: 8px 10px;
+          }
+
+          .embed-host {
+            font-size: 12px;
+            color: #8e8e93;
+          }
+          .embed-title {
+            font-size: 14px;
+            font-weight: 600;
+            line-height: 1.25;
+            color: #000;
+          }
+          .embed-desc {
+            font-size: 13px;
+            color: #555;
+            line-height: 1.3;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+          }
+        }
+
+        // Reaction sits on the embed corner like iMessage tapbacks.
+        .message-embed .message-reaction {
+          position: absolute;
+          bottom: -10px;
+          font-size: 18px;
+          background: #fff;
+          border-radius: 12px;
+          padding: 0 3px;
+          box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+          line-height: 1.4;
+        }
+        &.incoming .message-embed .message-reaction {
+          right: -6px;
+        }
+        &.outgoing .message-embed .message-reaction {
+          left: -6px;
         }
 
         &:hover .source-link {
@@ -618,6 +782,7 @@
         &.outgoing .message-reaction {
           left: -6px;
         }
+
       }
 
       .tapback-menu {
@@ -665,13 +830,13 @@
           height: 8px;
           background: #8e8e93;
           border-radius: 50%;
-          animation: typingBounce 1.4s infinite;
+          animation: typingBounce 0.9s infinite;
 
           &:nth-child(2) {
-            animation-delay: 0.2s;
+            animation-delay: 0.15s;
           }
           &:nth-child(3) {
-            animation-delay: 0.4s;
+            animation-delay: 0.3s;
           }
         }
       }

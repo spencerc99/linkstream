@@ -8,3 +8,7 @@ ALLOWED_ORIGINS = "*"
 
 # Set via: bunx wrangler secret put ANTHROPIC_API_KEY
 # ANTHROPIC_API_KEY = set as secret
+
+# Shared secret required in the x-haiku-key request header. The client sends it
+# via VITE_HAIKU_KEY. When unset, the gate is disabled.
+# Set via: bunx wrangler secret put CLIENT_SECRET
