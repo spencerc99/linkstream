@@ -1,4 +1,5 @@
 import { useCallback, useState } from "react";
+import { Link } from "react-router-dom";
 import { LinkPost, ExternalEmbed } from "./types";
 import { useJetStream } from "./hooks/useJetStream";
 import dayjs from "dayjs";
@@ -122,6 +123,9 @@ export function StreamView() {
             alignItems: "center",
           }}
         >
+          <Link to="/" style={{ textDecoration: "none" }}>
+            &larr; index
+          </Link>
           <button onClick={() => setIsPaused((prev) => !prev)}>
             {isPaused ? "Resume" : "Pause"}
           </button>

@@ -1,0 +1,5 @@
+# SPA catch-all: serve index.html for client-side routes (200 = rewrite, not
+# redirect, so react-router handles the path and the OAuth ?code=&state=
+# query string survives). Real static files (client-metadata.json, assets,
+# vite.svg) are matched first and served directly, never hitting this rule.
+/*    /index.html    200
