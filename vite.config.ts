@@ -41,7 +41,6 @@ function bakeClientMetadataOrigin(): Plugin {
         distFile,
         contents.replaceAll(METADATA_PLACEHOLDER, origin)
       );
-      // eslint-disable-next-line no-console
       console.log(`client-metadata.json origin baked as ${origin}`);
     },
   };

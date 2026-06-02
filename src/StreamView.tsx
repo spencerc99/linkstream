@@ -5,8 +5,10 @@ import { useJetStream } from "./hooks/useJetStream";
 import { DomainHistogram } from "./components/DomainHistogram";
 import { LinkPreview } from "./components/LinkPreview";
 import { RemoteControl } from "./components/RemoteControl";
-import { MeteorShower } from "./components/MeteorShower";
-import { FocusMode } from "./components/FocusMode";
+// Meteor and focus visual modes are hidden for the pushable release.
+// Restore by uncommenting these imports and the branches in renderContent().
+// import { MeteorShower } from "./components/MeteorShower";
+// import { FocusMode } from "./components/FocusMode";
 import { shouldShowLink } from "./utils/contentClassification";
 import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -333,25 +335,26 @@ export function StreamView() {
 
   // Render different visual modes
   const renderContent = () => {
-    if (remoteState.visualMode === "meteor") {
-      return (
-        <MeteorShower
-          links={filteredLinks}
-          speed={1}
-          isPaused={remoteState.isPaused}
-        />
-      );
-    }
-
-    if (remoteState.visualMode === "focus") {
-      return (
-        <FocusMode
-          links={filteredLinks}
-          speed={1}
-          isPaused={remoteState.isPaused}
-        />
-      );
-    }
+    // Meteor and focus modes are hidden for the pushable release — grid only.
+    // if (remoteState.visualMode === "meteor") {
+    //   return (
+    //     <MeteorShower
+    //       links={filteredLinks}
+    //       speed={1}
+    //       isPaused={remoteState.isPaused}
+    //     />
+    //   );
+    // }
+    //
+    // if (remoteState.visualMode === "focus") {
+    //   return (
+    //     <FocusMode
+    //       links={filteredLinks}
+    //       speed={1}
+    //       isPaused={remoteState.isPaused}
+    //     />
+    //   );
+    // }
 
     // Default grid mode
     return (
