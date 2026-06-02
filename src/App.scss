@@ -1,4 +1,14 @@
 iframe {
-  width: 480px;
+  max-width: 480px;
   height: 320px;
+  min-width: 400px;
+  width: 100%;
+}
+
+a {
+  transition: filter 0.2s ease, transform 0.2s ease;
+  &:hover {
+    transform: scale(1.05);
+    filter: brightness(1.1);
+  }
 }
