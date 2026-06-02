@@ -6,9 +6,6 @@ compatibility_date = "2025-04-01"
 # comma-separated list of allowed origins, or "*"
 ALLOWED_ORIGINS = "*"
 
-# Set via: bunx wrangler secret put ANTHROPIC_API_KEY
-# ANTHROPIC_API_KEY = set as secret
-
-# Shared secret required in the x-haiku-key request header. The client sends it
-# via VITE_HAIKU_KEY. When unset, the gate is disabled.
-# Set via: bunx wrangler secret put CLIENT_SECRET
+# No secrets: this worker is a bring-your-own-key relay. Each request must
+# carry the caller's own Anthropic key in the x-anthropic-key header, which is
+# forwarded to Anthropic and never stored. There is no shared key to protect.

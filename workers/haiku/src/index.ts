@@ -1,9 +1,9 @@
+// Bring-your-own-key relay: callers supply their own Anthropic key in the
+// x-anthropic-key header. The worker forwards it to Anthropic and never stores
+// or logs it, so each request is billed to its own caller — there is no shared
+// key and no bill for the deployer to front.
 interface Env {
-  ANTHROPIC_API_KEY: string;
   ALLOWED_ORIGINS?: string;
-  // Shared secret required in the x-haiku-key header. When unset, the gate is
-  // disabled (so the worker isn't locked out before the secret is configured).
-  CLIENT_SECRET?: string;
 }
 
 interface GeneratedComment {
@@ -84,7 +84,7 @@ function corsHeaders(origin: string | null, allowed: string | undefined): Header
   return {
     "Access-Control-Allow-Origin": allow,
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "content-type, x-haiku-key",
+    "Access-Control-Allow-Headers": "content-type, x-anthropic-key",
     "Access-Control-Max-Age": "86400",
   };
 }
@@ -100,9 +100,14 @@ export default {
     if (request.method !== "POST") {
       return new Response("method not allowed", { status: 405, headers: cors });
     }
-    // Gate on a shared secret so a found URL can't be used to run up the bill.
-    if (env.CLIENT_SECRET && request.headers.get("x-haiku-key") !== env.CLIENT_SECRET) {
-      return Response.json({ error: "unauthorized" }, { status: 401, headers: cors });
+
+    // The caller's own Anthropic key — required, never stored or logged.
+    const apiKey = request.headers.get("x-anthropic-key");
+    if (!apiKey) {
+      return Response.json(
+        { error: "missing x-anthropic-key header" },
+        { status: 401, headers: cors }
+      );
     }
 
     let body: { post?: string; count?: number };
@@ -122,7 +127,7 @@ export default {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-api-key": env.ANTHROPIC_API_KEY,
+        "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
       },
       body: JSON.stringify({

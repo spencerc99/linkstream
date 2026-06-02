@@ -7,6 +7,9 @@ import { useLocalLLM } from "./useLocalLLM";
 import {
   generateHaikuComments,
   HAIKU_WORKER_URL,
+  HaikuError,
+  loadStoredApiKey,
+  storeApiKey,
 } from "./haikuComments";
 import { extractSubject, scoreRelevance, type Subject } from "./topicMatch";
 import { resolveCommentAuthor } from "./userIdentity";
@@ -199,6 +202,9 @@ export function FakePoster() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [mode, setMode] = useState<CommentMode>(loadStoredMode);
   const [modeError, setModeError] = useState<string | null>(null);
+  // The user's own Anthropic key (BYOK) for Haiku mode, kept in their browser.
+  const [apiKey, setApiKey] = useState<string>(loadStoredApiKey);
+  const [keyInput, setKeyInput] = useState("");
   const [expandedTweets, setExpandedTweets] = useState<Set<string>>(new Set());
   // Bumped when a real Bluesky profile resolves, to re-render comment authors.
   const [, setProfileTick] = useState(0);
@@ -472,13 +478,21 @@ export function FakePoster() {
       }
     }
     if (activeMode === "haiku") {
-      const comments = await generateHaikuComments(postText, 25);
-      if (comments.length === 0) {
+      let comments;
+      try {
+        comments = await generateHaikuComments(postText, 25, apiKey);
+      } catch (e) {
         setModeError(
-          HAIKU_WORKER_URL
-            ? "Haiku returned no comments (check Worker logs)"
-            : "VITE_HAIKU_WORKER_URL is not set"
+          e instanceof HaikuError
+            ? e.message
+            : e instanceof Error
+              ? e.message
+              : "Haiku request failed"
         );
+        return;
+      }
+      if (comments.length === 0) {
+        setModeError("Haiku returned no comments — try again");
         return;
       }
       const pending = comments.map((c) => ({
@@ -648,6 +662,55 @@ export function FakePoster() {
         {mode === "local" && localLLM.status === "unsupported" && (
           <div className="mode-status error">
             This browser doesn't support WebGPU. Try Chrome or Edge.
+          </div>
+        )}
+        {mode === "haiku" && !apiKey && (
+          <form
+            className="apikey-panel"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const k = keyInput.trim();
+              if (!k) return;
+              setApiKey(k);
+              storeApiKey(k);
+              setKeyInput("");
+              setModeError(null);
+            }}
+          >
+            <input
+              type="password"
+              value={keyInput}
+              onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="sk-ant-… your Anthropic API key"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            <button type="submit">Save</button>
+            <p className="apikey-note">
+              Bring your own key. It's stored only in this browser and sent
+              per-request to generate comments — never saved on a server.{" "}
+              <a
+                href="https://console.anthropic.com/settings/keys"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                Get a key ↗
+              </a>
+            </p>
+          </form>
+        )}
+        {mode === "haiku" && apiKey && (
+          <div className="mode-status">
+            Using your Anthropic key (stored in this browser).{" "}
+            <button
+              className="apikey-clear"
+              onClick={() => {
+                setApiKey("");
+                storeApiKey("");
+              }}
+            >
+              remove key
+            </button>
           </div>
         )}
         {(mode === "haiku" || mode === "relevant") && modeError && (
