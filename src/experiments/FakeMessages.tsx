@@ -875,6 +875,14 @@ export function FakeMessages() {
     // consumed (not re-routed through the normal intake path).
     if (post.isNsfw && !showNsfwRef.current) return true;
 
+    // In Accounts mode each conversation is a single account. A reply to your
+    // post from someone other than that account reads as a non-sequitur, so we
+    // consume it (return true) without routing it into the chat. Groups mode is
+    // intentionally multi-person, so it keeps every replier.
+    if (target.mode === "accounts" && post.did !== target.conversationId) {
+      return true;
+    }
+
     profileResolver.get(post.did);
     pendingQueue.current.unshift({
       mode: target.mode,
