@@ -7,6 +7,7 @@ import { quotedPostResolver } from "./quotedPostResolver";
 import { useBskyAuth } from "./useBskyAuth";
 import { postReply, type ReplyTarget } from "./bskyAuth";
 import { useDocumentTitle } from "./useDocumentTitle";
+import { playMessageSound } from "./messageSound";
 import "./FakeMessages.scss";
 
 type MessagesMode = "accounts" | "groups";
@@ -309,10 +310,12 @@ function MessageEmbedView({ embed }: { embed: MessageEmbed }) {
                   loading="lazy"
                 />
               )}
-              <span className="quote-name">
-                {quoted.authorName || quoted.authorHandle}
-              </span>
-              <span className="quote-handle">@{quoted.authorHandle}</span>
+              <div className="quote-author-names">
+                <span className="quote-name">
+                  {quoted.authorName || quoted.authorHandle}
+                </span>
+                <span className="quote-handle">@{quoted.authorHandle}</span>
+              </div>
             </div>
             {quoted.text && <span className="quote-text">{quoted.text}</span>}
           </>
@@ -617,6 +620,10 @@ export function FakeMessages() {
       next.set(p.conversationId, updated);
       return next;
     });
+
+    // Chime like iMessage on receive. After the state update so audio can
+    // never block delivery (a throw here would strand the convo on "typing").
+    playMessageSound();
   }
 
   // ---- Mode-specific firehose handling ---------------------------------

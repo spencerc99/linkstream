@@ -851,6 +851,9 @@
             display: flex;
             align-items: center;
             gap: 6px;
+            // Allow the name column to shrink so a long name/handle
+            // ellipsizes instead of overflowing the card.
+            min-width: 0;
           }
 
           .quote-avatar {
@@ -858,17 +861,31 @@
             height: 18px;
             border-radius: 50%;
             object-fit: cover;
+            flex-shrink: 0;
+          }
+
+          // Name on the top line, handle on the line below it.
+          .quote-author-names {
+            display: flex;
+            flex-direction: column;
+            min-width: 0;
           }
 
           .quote-name {
             font-size: 14px;
             font-weight: 600;
             color: #000;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
           }
 
           .quote-handle {
             font-size: 12px;
             color: #8e8e93;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
           }
 
           .quote-text {
