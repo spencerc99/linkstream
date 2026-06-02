@@ -7,7 +7,11 @@ import { quotedPostResolver } from "./quotedPostResolver";
 import { useBskyAuth } from "./useBskyAuth";
 import { postReply, type ReplyTarget } from "./bskyAuth";
 import { useDocumentTitle } from "./useDocumentTitle";
-import { playMessageSound } from "./messageSound";
+import {
+  playMessageSound,
+  isMessageSoundEnabled,
+  setMessageSoundEnabled,
+} from "./messageSound";
 import "./FakeMessages.scss";
 
 type MessagesMode = "accounts" | "groups";
@@ -466,6 +470,9 @@ export function FakeMessages() {
   // Whether to allow self-labeled NSFW posts through the firehose intake.
   const [showNsfw, setShowNsfw] = useState(loadStoredShowNsfw);
   const showNsfwRef = useRef(showNsfw);
+  // Whether incoming texts play the iMessage chime. The sound module owns the
+  // setting (so playback can self-gate); this mirrors it for the toggle UI.
+  const [soundEnabled, setSoundEnabled] = useState(isMessageSoundEnabled);
   // Session score: every reply sent (fake or real Bluesky post).
   const [replyTimestamps, setReplyTimestamps] = useState<number[]>([]);
   const [_rateTick, setRateTick] = useState(0);
@@ -1222,7 +1229,7 @@ export function FakeMessages() {
   const totalUnread = sortedConvos.reduce((s, c) => s + c.unreadCount, 0);
 
   const placeholder =
-    mode === "accounts" ? "reply to this account..." : "send to the group...";
+    mode === "accounts" ? "reply to this DM..." : "send to the group...";
 
   // Keyboard navigation: ↑/↓ to move between conversations, Esc to focus input
   const inputRef = useRef<HTMLInputElement>(null);
@@ -1360,7 +1367,7 @@ export function FakeMessages() {
             onClick={() => handleModeChange("accounts")}
             title="Every Bluesky account becomes its own contact"
           >
-            Accounts
+            DMs
           </button>
           <button
             role="tab"
@@ -1389,7 +1396,7 @@ export function FakeMessages() {
           {sortedConvos.length === 0 && (
             <div className="empty-list">
               {mode === "accounts"
-                ? "Waiting for accounts to post..."
+                ? "Waiting for DMs to come in..."
                 : "Waiting for conversations to form..."}
             </div>
           )}
@@ -1453,17 +1460,37 @@ export function FakeMessages() {
       </div>
 
       <div className="messages-main">
-        <button
-          className={`nsfw-toggle ${showNsfw ? "active" : ""}`}
-          onClick={() => setShowNsfw((v) => !v)}
-          title={
-            showNsfw
-              ? "NSFW content is showing — click to hide"
-              : "Show self-labeled NSFW content"
-          }
-        >
-          {showNsfw ? "NSFW: on" : "NSFW: off"}
-        </button>
+        <div className="header-toggles">
+          <button
+            className={`header-toggle ${soundEnabled ? "active" : ""}`}
+            onClick={() => {
+              const next = !soundEnabled;
+              setMessageSoundEnabled(next);
+              setSoundEnabled(next);
+              // Clicking is a user gesture — preview the chime when enabling so
+              // browser autoplay unlocks and the user hears what it sounds like.
+              if (next) playMessageSound();
+            }}
+            title={
+              soundEnabled
+                ? "Message sound is on — click to mute"
+                : "Play a sound on each incoming message"
+            }
+          >
+            {soundEnabled ? "🔊 sound" : "🔇 sound"}
+          </button>
+          <button
+            className={`header-toggle nsfw-toggle ${showNsfw ? "active" : ""}`}
+            onClick={() => setShowNsfw((v) => !v)}
+            title={
+              showNsfw
+                ? "NSFW content is showing — click to hide"
+                : "Show self-labeled NSFW content"
+            }
+          >
+            {showNsfw ? "NSFW: on" : "NSFW: off"}
+          </button>
+        </div>
         {activeConversation ? (
           <>
             <div className="chat-header">
@@ -1670,7 +1697,7 @@ export function FakeMessages() {
           <div className="messages-empty-state">
             <p>
               {mode === "accounts"
-                ? "No account has posted yet. The firehose will fill this up shortly."
+                ? "No DMs yet. The firehose will fill this up shortly."
                 : "No conversation has formed yet. Group chats appear once a thread has at least two participants."}
             </p>
           </div>

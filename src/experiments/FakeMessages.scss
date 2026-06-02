@@ -548,13 +548,18 @@
     min-width: 0;
     position: relative;
 
-    // Floating NSFW toggle, pinned top-right, hovering over the chat header
-    // (or the empty corner when no conversation is open).
-    .nsfw-toggle {
+    // Floating toggle cluster (sound, NSFW), pinned top-right, hovering over
+    // the chat header (or the empty corner when no conversation is open).
+    .header-toggles {
       position: absolute;
       top: 12px;
       right: 16px;
       z-index: 20;
+      display: flex;
+      gap: 6px;
+    }
+
+    .header-toggle {
       padding: 5px 10px;
       border-radius: 14px;
       border: 1px solid #d1d1d6;
@@ -575,10 +580,17 @@
         border-color: #b0b0b5;
       }
 
+      // Sound toggle "on" reads as a calm enabled state, not an alarm.
       &.active {
+        background: #007aff;
+        border-color: #007aff;
+        color: #fff;
+      }
+
+      // NSFW "on" stays red as a content warning.
+      &.nsfw-toggle.active {
         background: #ff3b30;
         border-color: #ff3b30;
-        color: #fff;
       }
     }
 
