@@ -2,7 +2,7 @@
 // laugh — googly eyes, an open mouth, a synthesized "heh-heh", and a spill of
 // HAHAHA that scatters across the page. Calls onLaugh so the page can react.
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 interface Spill {
   id: number;
@@ -71,7 +71,27 @@ export function HahTitle({ onLaugh }: { onLaugh?: () => void }) {
   const [laughing, setLaughing] = useState(false);
   const [spills, setSpills] = useState<Spill[]>([]);
   const spillId = useRef(0);
+  // Every pending timeout, so they can all be cancelled if we unmount
+  // mid-laugh (avoids state updates / DOM pokes on a detached component).
+  const timers = useRef<Set<ReturnType<typeof setTimeout>>>(new Set());
   const resetTimer = useRef<ReturnType<typeof setTimeout>>();
+
+  const after = useCallback((ms: number, fn: () => void) => {
+    const id = setTimeout(() => {
+      timers.current.delete(id);
+      fn();
+    }, ms);
+    timers.current.add(id);
+  }, []);
+
+  useEffect(
+    () => () => {
+      timers.current.forEach(clearTimeout);
+      timers.current.clear();
+      clearTimeout(resetTimer.current);
+    },
+    []
+  );
 
   const laugh = useCallback(() => {
     const beats = playLaugh();
@@ -82,7 +102,7 @@ export function HahTitle({ onLaugh }: { onLaugh?: () => void }) {
     // pulse if audio gave us no beats.
     if (beats.length > 0) {
       for (const ms of beats) {
-        setTimeout(() => onLaugh?.(), ms);
+        after(ms, () => onLaugh?.());
       }
     } else {
       onLaugh?.();
@@ -98,16 +118,17 @@ export function HahTitle({ onLaugh }: { onLaugh?: () => void }) {
       scale: 0.7 + Math.random() * 1.3,
     }));
     setSpills((prev) => [...prev, ...burst]);
-    setTimeout(() => {
+    after(1400, () => {
       const ids = new Set(burst.map((b) => b.id));
       setSpills((prev) => prev.filter((s) => !ids.has(s.id)));
-    }, 1400);
+    });
 
-    // Keep the face laughing until just after the last syllable.
+    // Keep the face laughing until just after the last syllable. A fresh
+    // click cancels the prior reset so rapid laughs don't cut each other off.
     const lastBeat = beats.length > 0 ? beats[beats.length - 1] : 600;
     clearTimeout(resetTimer.current);
     resetTimer.current = setTimeout(() => setLaughing(false), lastBeat + 300);
-  }, [onLaugh]);
+  }, [onLaugh, after]);
 
   return (
     <span className={`hah ${laughing ? "hah--laughing" : ""}`}>

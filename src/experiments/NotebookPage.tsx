@@ -8,6 +8,7 @@ interface Entry {
   title: string;
   description: string;
   note?: string;
+  comingSoon?: boolean;
 }
 
 const ENTRIES: Entry[] = [
@@ -19,18 +20,14 @@ const ENTRIES: Entry[] = [
   {
     path: "/HAH/messages",
     title: "messages",
-    description: "texts that never stop. real posts, rerouted as DMs to you.",
-    note: "sign in to reply for real",
+    description: "if all social media was just dming you",
+    note: "sign in with Bluesky to make real replies!",
   },
   {
     path: "/HAH/poster",
     title: "poster",
-    description: "post once. watch it go viral in front of you.",
-  },
-  {
-    path: "/HAH/void",
-    title: "the void",
-    description: "speak into the dark. it listens, and it grows.",
+    description: "an exercise in the emotions of virality",
+    comingSoon: true,
   },
 ];
 
@@ -102,14 +99,27 @@ export function NotebookPage() {
           <h2 className="notebook__section-title">studies</h2>
           <ol className="notebook__entries">
             {ENTRIES.map((entry) => (
-              <li key={entry.path} className="entry">
-                <Link to={entry.path} className="entry__title">
-                  {entry.title}
-                </Link>{" "}
+              <li
+                key={entry.path}
+                className={`entry ${entry.comingSoon ? "entry--soon" : ""}`}
+              >
+                {entry.comingSoon ? (
+                  <span className="entry__title entry__title--soon">
+                    {entry.title}
+                  </span>
+                ) : (
+                  <Link to={entry.path} className="entry__title">
+                    {entry.title}
+                  </Link>
+                )}{" "}
                 <span className="entry__desc">
                   — {entry.description}
-                  {entry.note && (
-                    <span className="entry__note"> ({entry.note})</span>
+                  {entry.comingSoon ? (
+                    <span className="entry__soon-tag"> (coming soon)</span>
+                  ) : (
+                    entry.note && (
+                      <span className="entry__note"> ({entry.note})</span>
+                    )
                   )}
                 </span>
               </li>

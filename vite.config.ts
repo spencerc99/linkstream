@@ -25,6 +25,14 @@ function bakeClientMetadataOrigin(): Plugin {
       if (!rawOrigin) return;
 
       const origin = rawOrigin.replace(/\/$/, "");
+      // AT Proto requires an absolute https client_id; a scheme-less origin
+      // would bake an invalid (relative) URL and break OAuth silently.
+      if (!/^https?:\/\//.test(origin)) {
+        throw new Error(
+          `OAuth origin must include a scheme (got "${origin}"). ` +
+            `Set VITE_OAUTH_ORIGIN to e.g. https://hah.spencer.place`
+        );
+      }
       const distFile = path.resolve(__dirname, "dist/client-metadata.json");
       if (!fs.existsSync(distFile)) return;
 

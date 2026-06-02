@@ -76,10 +76,10 @@ curl https://<project>.pages.dev/client-metadata.json   # substituted, not index
 
 ### 4. Attach the custom domain
 
-Add `atproto.spencer.place` (Pages → Custom domains) and wait for the cert.
+Add `hah.spencer.place` (Pages → Custom domains) and wait for the cert.
 Then:
 
-1. Set Pages env var `VITE_OAUTH_ORIGIN=https://atproto.spencer.place` and
+1. Set Pages env var `VITE_OAUTH_ORIGIN=https://hah.spencer.place` and
    **redeploy** (the origin is baked at build time, so an env change needs a
    rebuild).
 2. Add a redirect so `*.pages.dev` → the custom domain. OAuth `client_id` is
@@ -87,7 +87,3 @@ Then:
    so all real traffic should land on the one canonical origin.
 3. Tighten the Worker: set `ALLOWED_ORIGINS` in `workers/haiku/wrangler.toml`
    to the custom domain (+ `http://127.0.0.1:5173` for local) and redeploy.
-
-> Note: `atproto.spencer.place` is the candidate domain. The Void is purely
-> local (not atproto-backed), so the name is a loose umbrella, not a claim that
-> every experiment uses the protocol.
