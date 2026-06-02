@@ -71,6 +71,13 @@ type MessageEmbed =
       title?: string;
       description?: string;
       thumb?: string;
+    }
+  | {
+      // A quoted post. Only `uri` is known at firehose time; the quoted
+      // author/text/media are filled in by quotedPostResolver at render time.
+      kind: "quote";
+      uri: string;
+      media?: MessageEmbed;
     };
 
 interface Message {
