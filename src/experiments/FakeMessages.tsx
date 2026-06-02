@@ -1734,6 +1734,8 @@ function renderPreview(conv: Conversation) {
     snippet = `\ud83d\udcf7 ${n} ${n === 1 ? "Image" : "Images"}`;
   } else if (last.embed?.kind === "external") {
     snippet = "\ud83d\udd17 Link";
+  } else if (last.embed?.kind === "quote") {
+    snippet = "\ud83d\udcac Quoted post";
   } else {
     snippet = "";
   }
