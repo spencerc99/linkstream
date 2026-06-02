@@ -179,10 +179,35 @@ function imageCdnUrl(
   return `https://cdn.bsky.app/img/feed_${size}/plain/${did}/${cid}@jpeg`;
 }
 
-// Pull a renderable image or link-card embed out of a post record, if any.
+// Pull a renderable embed (image, link-card, or quoted post) out of a post
+// record, if any. For quote-with-media, the quoted post's media is nested.
 function extractEmbed(record: any, did: string): MessageEmbed | undefined {
-  // recordWithMedia nests the media embed under .media
-  const embed = record?.embed?.media ?? record?.embed;
+  const outer = record?.embed;
+  const outerType = outer?.$type as string | undefined;
+  if (!outerType) return undefined;
+
+  // A quote post: app.bsky.embed.record carries the quoted post's strongRef.
+  if (outerType === "app.bsky.embed.record") {
+    const uri = outer.record?.uri as string | undefined;
+    return uri ? { kind: "quote", uri } : undefined;
+  }
+
+  // Quote-with-media: quote ref under .record.record, media under .media.
+  if (outerType === "app.bsky.embed.recordWithMedia") {
+    const uri = outer.record?.record?.uri as string | undefined;
+    if (!uri) return undefined;
+    const media = extractMediaEmbed(outer.media, did);
+    return { kind: "quote", uri, media };
+  }
+
+  return extractMediaEmbed(outer, did);
+}
+
+// Pull an image or external link-card embed out of a media embed object.
+function extractMediaEmbed(
+  embed: any,
+  did: string,
+): MessageEmbed | undefined {
   const type = embed?.$type as string | undefined;
   if (!type) return undefined;
 
