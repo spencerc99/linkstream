@@ -3,7 +3,7 @@
   "client_name": "HAH — Messages",
   "client_uri": "https://REPLACE_WITH_DEPLOYED_ORIGIN",
   "redirect_uris": [
-    "https://REPLACE_WITH_DEPLOYED_ORIGIN/HAH/messages"
+    "https://REPLACE_WITH_DEPLOYED_ORIGIN/messages"
   ],
   "scope": "atproto transition:generic",
   "grant_types": ["authorization_code", "refresh_token"],

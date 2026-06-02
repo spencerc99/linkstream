@@ -13,18 +13,18 @@ interface Entry {
 
 const ENTRIES: Entry[] = [
   {
-    path: "/HAH/linkstream",
+    path: "/linkstream",
     title: "linkstream",
     description: "a firehose of links, surfacing from Bluesky in real time.",
   },
   {
-    path: "/HAH/messages",
+    path: "/messages",
     title: "messages",
     description: "if all social media was just dming you",
     note: "sign in with Bluesky to make real replies!",
   },
   {
-    path: "/HAH/poster",
+    path: "/poster",
     title: "poster",
     description: "an exercise in the emotions of virality",
     comingSoon: true,

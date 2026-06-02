@@ -55,7 +55,7 @@ function getClientConfig() {
   const origin = isLocal
     ? `http://127.0.0.1:${location.port}`
     : location.origin;
-  const redirectUri = `${origin}/HAH/messages`;
+  const redirectUri = `${origin}/messages`;
 
   if (isLocal) {
     const clientId =

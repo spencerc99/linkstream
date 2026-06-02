@@ -1,4 +1,4 @@
-import { Routes, Route, Navigate } from "react-router-dom";
+import { Routes, Route } from "react-router-dom";
 import { StreamView } from "./StreamView";
 import { NotebookPage } from "./experiments/NotebookPage";
 import { FakeMessages } from "./experiments/FakeMessages";
@@ -10,11 +10,10 @@ function App() {
   return (
     <Routes>
       <Route path="/" element={<NotebookPage />} />
-      <Route path="/HAH" element={<Navigate to="/" replace />} />
-      <Route path="/HAH/linkstream" element={<StreamView />} />
-      <Route path="/HAH/messages" element={<FakeMessages />} />
-      <Route path="/HAH/poster" element={<FakePoster />} />
-      <Route path="/HAH/void" element={<TheVoid />} />
+      <Route path="/linkstream" element={<StreamView />} />
+      <Route path="/messages" element={<FakeMessages />} />
+      <Route path="/poster" element={<FakePoster />} />
+      <Route path="/void" element={<TheVoid />} />
     </Routes>
   );
 }
