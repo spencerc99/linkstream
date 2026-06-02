@@ -530,9 +530,18 @@ export function FakeMessages() {
     };
   }, [accountsActiveId, groupsActiveId]);
 
-  // Re-render when profiles resolve
+  // Re-render when profiles or quoted posts resolve
   useEffect(() => {
-    return profileResolver.subscribe(() => setProfileTick((t) => t + 1));
+    const unsubProfile = profileResolver.subscribe(() =>
+      setProfileTick((t) => t + 1),
+    );
+    const unsubQuote = quotedPostResolver.subscribe(() =>
+      setProfileTick((t) => t + 1),
+    );
+    return () => {
+      unsubProfile();
+      unsubQuote();
+    };
   }, []);
 
   // Auto-scroll on message change / mode switch
