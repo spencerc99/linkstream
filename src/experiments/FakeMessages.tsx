@@ -3,6 +3,7 @@ import { useJetStream } from "../hooks/useJetStream";
 import { Link } from "react-router-dom";
 import dayjs from "dayjs";
 import { profileResolver } from "./profileResolver";
+import { quotedPostResolver } from "./quotedPostResolver";
 import { useBskyAuth } from "./useBskyAuth";
 import { postReply, type ReplyTarget } from "./bskyAuth";
 import { useDocumentTitle } from "./useDocumentTitle";
@@ -286,6 +287,47 @@ function postUri(did: string, rkey: string): string {
 
 // Renders an image or link-card embed inside a message bubble.
 function MessageEmbedView({ embed }: { embed: MessageEmbed }) {
+  if (embed.kind === "quote") {
+    const quoted = quotedPostResolver.get(embed.uri);
+    const appUrl = bskyAppUrlFromUri(embed.uri);
+    return (
+      <a
+        className="embed-quote"
+        href={appUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {quoted ? (
+          <>
+            <div className="quote-author">
+              {quoted.authorAvatar && (
+                <img
+                  className="quote-avatar"
+                  src={quoted.authorAvatar}
+                  alt=""
+                  loading="lazy"
+                />
+              )}
+              <span className="quote-name">
+                {quoted.authorName || quoted.authorHandle}
+              </span>
+              <span className="quote-handle">@{quoted.authorHandle}</span>
+            </div>
+            {quoted.text && <span className="quote-text">{quoted.text}</span>}
+          </>
+        ) : (
+          <span className="quote-pending">quoted post</span>
+        )}
+        {embed.media?.kind === "images" && (
+          <div className="quote-media">
+            <MessageEmbedView embed={embed.media} />
+          </div>
+        )}
+      </a>
+    );
+  }
+
   if (embed.kind === "images") {
     return (
       <div className={`embed-images count-${Math.min(embed.images.length, 4)}`}>
