@@ -1271,7 +1271,7 @@ export function FakeMessages() {
   }, [sortedConvos, currentActiveId, handleSelectConversation, inputText]);
 
   return (
-    <div className="fake-messages">
+    <div className={`fake-messages ${currentActiveId ? "viewing-chat" : ""}`}>
       <div className="messages-sidebar">
         <div className="sidebar-header">
           <Link to="/" className="back-button">
@@ -1496,6 +1496,14 @@ export function FakeMessages() {
         {activeConversation ? (
           <>
             <div className="chat-header">
+              <button
+                type="button"
+                className="chat-back-button"
+                onClick={() => setCurrentActiveId(null)}
+                aria-label="Back to conversations"
+              >
+                &lsaquo;
+              </button>
               {(() => {
                 const profileUrl = conversationBskyUrl(activeConversation);
                 const inner = (

@@ -1,6 +1,9 @@
 .fake-messages {
   display: flex;
   height: 100vh;
+  // Use dynamic viewport height where supported so the iOS URL bar
+  // collapsing/expanding doesn't clip the chat.
+  height: 100dvh;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
     "Helvetica Neue", sans-serif;
   background: #fff;
@@ -602,6 +605,24 @@
       border-bottom: 0.5px solid #d1d1d6;
       background: #fafafa;
 
+      // Back-to-list control, only shown in the single-pane mobile layout.
+      .chat-back-button {
+        display: none;
+        background: none;
+        border: none;
+        color: #007aff;
+        font-size: 30px;
+        font-weight: 300;
+        line-height: 1;
+        // Generous tap target while keeping the glyph compact.
+        min-width: 32px;
+        height: 40px;
+        margin: -4px 0;
+        padding: 0 6px 0 0;
+        cursor: pointer;
+        flex-shrink: 0;
+      }
+
       // Whole header is a link to the profile/thread on Bluesky.
       .chat-header-link {
         display: flex;
@@ -854,7 +875,8 @@
           display: flex;
           flex-direction: column;
           gap: 4px;
-          max-width: 240px;
+          // Cap at 240px on wide bubbles, but shrink to fit narrow ones.
+          max-width: min(240px, 80%);
           padding: 8px 10px;
           border-radius: 16px;
           background: #f2f2f7;
@@ -1165,6 +1187,47 @@
           cursor: default;
         }
       }
+    }
+  }
+
+  // ---- Mobile: single pane at a time -------------------------------------
+  // Below the breakpoint the sidebar (conversation list) and the chat are
+  // each full-width and only one shows at a time, switched by the
+  // `viewing-chat` class (set when a conversation is selected).
+  @media (max-width: 768px) {
+    .messages-sidebar {
+      width: 100%;
+      border-right: none;
+    }
+
+    .messages-main {
+      width: 100%;
+    }
+
+    // Default (no conversation selected): show the list, hide the chat.
+    .messages-main {
+      display: none;
+    }
+
+    &.viewing-chat {
+      .messages-sidebar {
+        display: none;
+      }
+
+      .messages-main {
+        display: flex;
+      }
+    }
+
+    // Touch devices don't need the arrow-key hints. Scoped under the sidebar
+    // to match the base rule's specificity so this override wins.
+    .messages-sidebar .keyboard-hints {
+      display: none;
+    }
+
+    // Scoped under .messages-main to match the base rule's specificity.
+    .messages-main .chat-header .chat-back-button {
+      display: block;
     }
   }
 }
