@@ -12,6 +12,68 @@ declare global {
   }
 }
 
+// Only http(s) URLs are safe to put in an href; anything else (javascript:,
+// data:, etc.) is rejected. URLs here originate from the public Bluesky
+// firehose, so they're untrusted.
+function safeHttpUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === "http:" || parsed.protocol === "https:"
+      ? parsed.href
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+// Builds the "click to view on <platform>" fallback card without innerHTML,
+// so an untrusted url can never inject markup.
+function buildPlatformFallback(
+  emoji: string,
+  label: string,
+  linkText: string,
+  url: string
+): HTMLDivElement {
+  const fallback = document.createElement("div");
+  fallback.style.cssText = `
+    width: 480px;
+    height: 320px;
+    border: 2px dashed #ccc;
+    border-radius: 8px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: #f8f9fa;
+    text-align: center;
+    padding: 20px;
+  `;
+
+  const emojiEl = document.createElement("div");
+  emojiEl.style.cssText = "font-size: 48px; margin-bottom: 16px;";
+  emojiEl.textContent = emoji;
+
+  const labelEl = document.createElement("div");
+  labelEl.style.cssText =
+    "font-size: 16px; font-weight: bold; margin-bottom: 8px;";
+  labelEl.textContent = label;
+
+  fallback.append(emojiEl, labelEl);
+
+  const safeUrl = safeHttpUrl(url);
+  if (safeUrl) {
+    const anchor = document.createElement("a");
+    anchor.href = safeUrl;
+    anchor.target = "_blank";
+    anchor.rel = "noopener noreferrer";
+    anchor.style.cssText = "color: #0066cc; text-decoration: none;";
+    anchor.textContent = linkText;
+    fallback.appendChild(anchor);
+  }
+
+  return fallback;
+}
+
 // Cache for resolved TikTok URLs to avoid repeat requests
 const tiktokUrlCache = new Map<string, string>();
 
@@ -205,7 +267,7 @@ export function LinkPreview({ link, transformedUrl }: LinkPreviewProps) {
       shortUrlMatch = url.match(/\/t\/([^/]+)/);
       if (shortUrlMatch && !videoId) {
         // For short URLs, use the rate-limited resolver
-        videoId = await TikTokResolver.resolveUrl(url);
+        videoId = (await TikTokResolver.resolveUrl(url)) ?? undefined;
       }
 
       if (videoId) {
@@ -228,27 +290,12 @@ export function LinkPreview({ link, transformedUrl }: LinkPreviewProps) {
     }
 
     // Fallback if we couldn't get video ID
-    const fallback = document.createElement("div");
-    fallback.style.cssText = `
-      width: 480px;
-      height: 320px;
-      border: 2px dashed #ccc;
-      border-radius: 8px;
-      display: flex;
-      flex-direction: column;
-      justify-content: center;
-      alignItems: center;
-      background: #f8f9fa;
-      text-align: center;
-      padding: 20px;
-    `;
-    fallback.innerHTML = `
-      <div style="font-size: 48px; margin-bottom: 16px;">🎵</div>
-      <div style="font-size: 16px; font-weight: bold; margin-bottom: 8px;">TikTok Video</div>
-      <a href="${url}" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: none;">
-        Click to view on TikTok
-      </a>
-    `;
+    const fallback = buildPlatformFallback(
+      "🎵",
+      "TikTok Video",
+      "Click to view on TikTok",
+      url
+    );
     embedContainerRef.current.appendChild(fallback);
     setLoadState("loaded");
   };
@@ -277,10 +324,21 @@ export function LinkPreview({ link, transformedUrl }: LinkPreviewProps) {
         width: calc(100% - 2px);
       `;
 
-      // Add fallback content for the blockquote
-      blockquote.innerHTML = `
-        <div style="padding: 16px;">
-          <a href="${url}" style="background: #FFFFFF; line-height: 0; padding: 0 0; text-align: center; text-decoration: none; width: 100%;" target="_blank">
+      // Add fallback content for the blockquote. The decorative skeleton is
+      // static markup, but the post URL is untrusted (from the firehose), so
+      // the anchor is created separately with a validated href — never
+      // interpolated into innerHTML.
+      const inner = document.createElement("div");
+      inner.style.cssText = "padding: 16px;";
+
+      const anchor = document.createElement("a");
+      const safeUrl = safeHttpUrl(url);
+      if (safeUrl) anchor.href = safeUrl;
+      anchor.target = "_blank";
+      anchor.rel = "noopener noreferrer";
+      anchor.style.cssText =
+        "background: #FFFFFF; line-height: 0; padding: 0 0; text-align: center; text-decoration: none; width: 100%;";
+      anchor.innerHTML = `
             <div style="display: flex; flex-direction: row; align-items: center;">
               <div style="background-color: #F4F4F4; border-radius: 50%; flex-grow: 0; height: 40px; margin-right: 14px; width: 40px;"></div>
               <div style="display: flex; flex-direction: column; flex-grow: 1; justify-content: center;">
@@ -301,9 +359,9 @@ export function LinkPreview({ link, transformedUrl }: LinkPreviewProps) {
             <div style="padding-top: 8px;">
               <div style="color: #3897f0; font-family: Arial,sans-serif; font-size: 14px; font-style: normal; font-weight: 550; line-height: 18px;">View this post on Instagram</div>
             </div>
-          </a>
-        </div>
       `;
+      inner.appendChild(anchor);
+      blockquote.appendChild(inner);
 
       // Create container with proper sizing
       const container = document.createElement("div");
@@ -341,27 +399,12 @@ export function LinkPreview({ link, transformedUrl }: LinkPreviewProps) {
       console.log("Failed to create Instagram embed:", e);
 
       // Fallback if embed creation fails
-      const fallback = document.createElement("div");
-      fallback.style.cssText = `
-        width: 480px;
-        height: 320px;
-        border: 2px dashed #ccc;
-        border-radius: 8px;
-        display: flex;
-        flex-direction: column;
-        justify-content: center;
-        alignItems: center;
-        background: #f8f9fa;
-        text-align: center;
-        padding: 20px;
-      `;
-      fallback.innerHTML = `
-        <div style="font-size: 48px; margin-bottom: 16px;">📷</div>
-        <div style="font-size: 16px; font-weight: bold; margin-bottom: 8px;">Instagram Post</div>
-        <a href="${url}" target="_blank" rel="noopener noreferrer" style="color: #0066cc; text-decoration: none;">
-          Click to view on Instagram
-        </a>
-      `;
+      const fallback = buildPlatformFallback(
+        "📷",
+        "Instagram Post",
+        "Click to view on Instagram",
+        url
+      );
       embedContainerRef.current.appendChild(fallback);
       setLoadState("loaded");
     }
@@ -416,7 +459,10 @@ export function LinkPreview({ link, transformedUrl }: LinkPreviewProps) {
         }}
         onLoad={handleIframeLoad}
         onError={handleIframeError}
-        sandbox="allow-scripts allow-same-origin allow-forms"
+        // src comes from the untrusted firehose; never combine allow-scripts
+        // with allow-same-origin here, or a frame resolving to our own origin
+        // could break out of the sandbox.
+        sandbox="allow-scripts allow-forms allow-popups allow-presentation"
         loading="lazy"
         allow="autoplay; encrypted-media; picture-in-picture"
         referrerPolicy="strict-origin-when-cross-origin"
