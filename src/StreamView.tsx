@@ -5,6 +5,7 @@ import { useJetStream } from "./hooks/useJetStream";
 import { DomainHistogram } from "./components/DomainHistogram";
 import { LinkPreview } from "./components/LinkPreview";
 import { RemoteControl } from "./components/RemoteControl";
+import { useDocumentTitle } from "./experiments/useDocumentTitle";
 // Meteor and focus visual modes are hidden for the pushable release.
 // Restore by uncommenting these imports and the branches in renderContent().
 // import { MeteorShower } from "./components/MeteorShower";
@@ -170,6 +171,7 @@ function transformUrl(url: string): string {
 }
 
 export function StreamView() {
+  useDocumentTitle("linkstream");
   const [links, setLinks] = useState<LinkPost[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [domainCounts, setDomainCounts] = useState<DomainCounts>({});

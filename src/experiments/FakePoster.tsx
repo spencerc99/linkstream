@@ -12,6 +12,7 @@ import {
   storeApiKey,
 } from "./haikuComments";
 import { extractSubject, scoreRelevance, type Subject } from "./topicMatch";
+import { useDocumentTitle } from "./useDocumentTitle";
 import { resolveCommentAuthor } from "./userIdentity";
 import { profileResolver } from "./profileResolver";
 import {
@@ -195,6 +196,7 @@ function AnimatedCount({ value }: { value: number }) {
 }
 
 export function FakePoster() {
+  useDocumentTitle("Poster");
   const [tweets, setTweets] = useState<Tweet[]>([]);
   const [composerText, setComposerText] = useState("");
   const [notifications, setNotifications] = useState<Notification[]>([]);

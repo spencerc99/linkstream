@@ -1,6 +1,7 @@
 import { useRef } from "react";
 import { Link } from "react-router-dom";
 import { HahTitle } from "./HahTitle";
+import { useDocumentTitle } from "./useDocumentTitle";
 import "./NotebookPage.scss";
 
 interface Entry {
@@ -32,6 +33,7 @@ const ENTRIES: Entry[] = [
 ];
 
 export function NotebookPage() {
+  useDocumentTitle();
   const rootRef = useRef<HTMLDivElement>(null);
 
   // Each call is one "ha" syllable: restart the brief glyph-shudder animation

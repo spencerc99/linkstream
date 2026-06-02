@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Link } from "react-router-dom";
+import { useDocumentTitle } from "./useDocumentTitle";
 import "./TheVoid.scss";
 
 interface VoidMessage {
@@ -37,6 +38,7 @@ function formatListeners(n: number): string {
 }
 
 export function TheVoid() {
+  useDocumentTitle("The Void");
   const [messages, setMessages] = useState<VoidMessage[]>([]);
   const [inputText, setInputText] = useState("");
   const [listeners, setListeners] = useState(0);

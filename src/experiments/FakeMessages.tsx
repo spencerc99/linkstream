@@ -5,6 +5,7 @@ import dayjs from "dayjs";
 import { profileResolver } from "./profileResolver";
 import { useBskyAuth } from "./useBskyAuth";
 import { postReply, type ReplyTarget } from "./bskyAuth";
+import { useDocumentTitle } from "./useDocumentTitle";
 import "./FakeMessages.scss";
 
 type MessagesMode = "accounts" | "groups";
@@ -357,6 +358,7 @@ function evictOldestUnlocked(map: Map<string, Conversation>): void {
 }
 
 export function FakeMessages() {
+  useDocumentTitle("Messages");
   const [mode, setMode] = useState<MessagesMode>(loadStoredMode);
   const modeRef = useRef(mode);
   const [_profileTick, setProfileTick] = useState(0);
