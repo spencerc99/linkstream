@@ -14,6 +14,7 @@ export interface QuotedPost {
 const BSKY_APPVIEW = "https://public.api.bsky.app";
 const BATCH_SIZE = 25;
 const BATCH_INTERVAL_MS = 200;
+const MAX_CONCURRENT_BATCHES = 3;
 
 type Subscriber = () => void;
 
@@ -23,6 +24,7 @@ class QuotedPostResolver {
   private queue: string[] = [];
   private subscribers = new Set<Subscriber>();
   private tickerStarted = false;
+  private inFlight = 0;
 
   subscribe(fn: Subscriber): () => void {
     this.subscribers.add(fn);
@@ -37,7 +39,12 @@ class QuotedPostResolver {
     if (this.tickerStarted) return;
     this.tickerStarted = true;
     setInterval(() => {
-      if (this.queue.length > 0) void this.flush();
+      while (
+        this.inFlight < MAX_CONCURRENT_BATCHES &&
+        this.queue.length > 0
+      ) {
+        void this.flush();
+      }
     }, BATCH_INTERVAL_MS);
   }
 
@@ -45,6 +52,7 @@ class QuotedPostResolver {
     if (this.queue.length === 0) return;
     const batch = this.queue.splice(0, BATCH_SIZE);
     batch.forEach((u) => this.pending.delete(u));
+    this.inFlight += 1;
     try {
       const params = batch
         .map((u) => `uris=${encodeURIComponent(u)}`)
@@ -97,6 +105,14 @@ class QuotedPostResolver {
       this.notify();
     } catch (e) {
       console.error("quoted post resolver batch failed", e);
+      // Cache null for the batch so a thrown fetch doesn't leave these URIs
+      // stuck pending forever (they were already removed from the queue).
+      for (const uri of batch) {
+        if (!this.cache.has(uri)) this.cache.set(uri, null);
+      }
+      this.notify();
+    } finally {
+      this.inFlight -= 1;
     }
   }
 
