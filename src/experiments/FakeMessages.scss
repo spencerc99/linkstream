@@ -250,6 +250,44 @@
       }
     }
 
+    .sidebar-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 0 12px 8px;
+
+      .filter-pill {
+        padding: 5px 10px;
+        background: transparent;
+        border: 1px solid #d1d1d6;
+        border-radius: 8px;
+        color: #007aff;
+        font-size: 12px;
+        font-weight: 600;
+        cursor: pointer;
+        transition:
+          background 0.15s,
+          color 0.15s,
+          border-color 0.15s;
+
+        &.active {
+          background: #007aff;
+          border-color: #007aff;
+          color: #fff;
+        }
+
+        &:hover:not(.active) {
+          background: #e8e8ed;
+        }
+
+        // NSFW pill, when on, reads as a warning rather than a neutral toggle.
+        &:last-child.active {
+          background: #ff3b30;
+          border-color: #ff3b30;
+        }
+      }
+    }
+
     .empty-list {
       padding: 24px 20px;
       text-align: center;
@@ -275,6 +313,14 @@
           background: #e8e8ed;
         }
 
+        &.replied {
+          box-shadow: inset 3px 0 0 #ffb800;
+
+          .replied-star {
+            color: #ffb800;
+          }
+        }
+
         &.active {
           background: #007aff;
 
@@ -297,6 +343,41 @@
             opacity: 0.85;
           }
         }
+      }
+    }
+
+    .keyboard-hints {
+      display: flex;
+      gap: 14px;
+      align-items: center;
+      justify-content: center;
+      padding: 7px 12px;
+      border-top: 0.5px solid #d1d1d6;
+      background: #ebebf0;
+      font-size: 11px;
+      color: #8e8e93;
+      flex-shrink: 0;
+
+      span {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+      }
+
+      kbd {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 4px;
+        font-family: inherit;
+        font-size: 11px;
+        color: #3c3c43;
+        background: #fff;
+        border: 1px solid #c7c7cc;
+        border-radius: 4px;
+        box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
       }
     }
   }
@@ -465,6 +546,41 @@
     display: flex;
     flex-direction: column;
     min-width: 0;
+    position: relative;
+
+    // Floating NSFW toggle, pinned top-right, hovering over the chat header
+    // (or the empty corner when no conversation is open).
+    .nsfw-toggle {
+      position: absolute;
+      top: 12px;
+      right: 16px;
+      z-index: 20;
+      padding: 5px 10px;
+      border-radius: 14px;
+      border: 1px solid #d1d1d6;
+      background: rgba(255, 255, 255, 0.9);
+      backdrop-filter: blur(8px);
+      color: #8e8e93;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
+      transition:
+        background 0.15s,
+        color 0.15s,
+        border-color 0.15s;
+
+      &:hover:not(.active) {
+        color: #3c3c43;
+        border-color: #b0b0b5;
+      }
+
+      &.active {
+        background: #ff3b30;
+        border-color: #ff3b30;
+        color: #fff;
+      }
+    }
 
     .chat-header {
       display: flex;
@@ -473,6 +589,28 @@
       padding: 10px 16px;
       border-bottom: 0.5px solid #d1d1d6;
       background: #fafafa;
+
+      // Whole header is a link to the profile/thread on Bluesky.
+      .chat-header-link {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+        text-decoration: none;
+        color: inherit;
+        border-radius: 8px;
+        margin: -4px -6px;
+        padding: 4px 6px;
+        transition: background 0.15s;
+
+        &:hover {
+          background: #ececf0;
+
+          .chat-contact-name {
+            color: #007aff;
+          }
+        }
+      }
 
       .chat-header-text {
         display: flex;

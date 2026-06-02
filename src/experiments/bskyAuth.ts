@@ -92,19 +92,29 @@ export async function initAuth(): Promise<void> {
       if (result && "session" in result) {
         session = result.session;
         agent = new api.Agent(session);
-        setState({
-          status: "signed-in",
-          handle: session.did
-            ? await resolveHandle(session.did).catch(() => undefined)
-            : undefined,
-          did: session.did,
-        });
+        // Set signed-in immediately; resolve the handle in the background so a
+        // slow profile lookup can't hold the UI on "loading".
+        setState({ status: "signed-in", did: session.did });
+        if (session.did) {
+          const did = session.did;
+          void resolveHandle(did)
+            .then((handle) => {
+              if (state.status === "signed-in" && state.did === did) {
+                setState({ ...state, handle });
+              }
+            })
+            .catch(() => {});
+        }
         // Remember that we have a session so future page loads can restore it
         try {
           localStorage.setItem(HAS_SESSION_KEY, "1");
         } catch {}
-        // Strip OAuth params from the URL so refresh doesn't re-process them
-        if (location.search.includes("code=") || location.search.includes("state=")) {
+        // Strip OAuth params (from query or fragment) so a refresh doesn't
+        // re-process them.
+        const hasOAuthParams =
+          /(?:^|[?#&])(code|state)=/.test(location.search) ||
+          /(?:^|[?#&])(code|state)=/.test(location.hash);
+        if (hasOAuthParams) {
           history.replaceState(null, "", location.pathname);
         }
       } else {
@@ -115,7 +125,7 @@ export async function initAuth(): Promise<void> {
         setState({ status: "signed-out" });
       }
     } catch (e) {
-      console.error("bskyAuth init failed, clearing stored state", e);
+      console.error("[bskyAuth] init failed, clearing stored state", e);
       // Try to blow away whatever stored state might be poisoned so the page
       // still works. User can sign in again fresh.
       await wipeAuthStorage().catch(() => {});
@@ -234,6 +244,9 @@ export async function postReply(
   if (!agent || !session) {
     throw new Error("not signed in");
   }
+  // TODO: optionally append a "sent from HAH.spencer.place" attribution to the
+  // text (likely behind a composer toggle, off by default — it publishes
+  // publicly on every reply and consumes characters). Decide UX before adding.
   const record: Record<string, unknown> = {
     $type: "app.bsky.feed.post",
     text,

@@ -19,12 +19,18 @@ const TAPBACK_REACTIONS = [
 ];
 
 const MODE_STORAGE_KEY = "hah.messages.mode";
+const NSFW_STORAGE_KEY = "hah.messages.showNsfw";
 
 function loadStoredMode(): MessagesMode {
   if (typeof localStorage === "undefined") return "accounts";
   const raw = localStorage.getItem(MODE_STORAGE_KEY);
   if (raw === "accounts" || raw === "groups") return raw;
   return "accounts";
+}
+
+function loadStoredShowNsfw(): boolean {
+  if (typeof localStorage === "undefined") return false;
+  return localStorage.getItem(NSFW_STORAGE_KEY) === "1";
 }
 
 // Deterministic color from a string (for account/group participant avatars)
@@ -120,6 +126,27 @@ interface PendingDelivery {
 
 // ---- Firehose filtering ---------------------------------------------------
 
+// Self-applied content labels (set by the poster) that we treat as NSFW.
+const NSFW_LABELS = new Set([
+  "porn",
+  "nudity",
+  "sexual",
+  "graphic-media",
+  "gore",
+  "nsfw",
+  "adult content",
+]);
+
+// Whether a post record carries a self-label we consider NSFW.
+function hasNsfwLabel(record: any): boolean {
+  const values = record?.labels?.values;
+  if (!Array.isArray(values)) return false;
+  return values.some((v: any) => {
+    const val = typeof v?.val === "string" ? v.val.toLowerCase() : "";
+    return NSFW_LABELS.has(val);
+  });
+}
+
 function baseTextFilter(text: string, langsDeclared: boolean): string | null {
   let t = text.replace(/#\w+/g, "").replace(/\s+/g, " ").trim();
   if (t.length > 200 || t.length < 2) return null;
@@ -132,13 +159,12 @@ function baseTextFilter(text: string, langsDeclared: boolean): string | null {
   return t;
 }
 
-
 // Construct the CDN URL for an image blob in a post record. Use "fullsize" for
 // inline display and "thumbnail" for small link-card previews.
 function imageCdnUrl(
   did: string,
   blobRef: any,
-  size: "fullsize" | "thumbnail" = "fullsize"
+  size: "fullsize" | "thumbnail" = "fullsize",
 ): string | null {
   const cid = blobRef?.ref?.$link ?? blobRef?.ref?.toString?.();
   if (typeof cid !== "string" || !cid) return null;
@@ -186,6 +212,7 @@ function usableAnyPost(data: any): {
   replyRootUri?: string;
   replyRootCid?: string;
   embed?: MessageEmbed;
+  isNsfw: boolean;
 } | null {
   const record = data.commit?.record;
   if (!record) return null;
@@ -194,6 +221,7 @@ function usableAnyPost(data: any): {
   if (!did) return null;
 
   const embed = extractEmbed(record, did);
+  const isNsfw = hasNsfwLabel(record);
 
   if (Array.isArray(record.langs) && record.langs.length > 0) {
     if (!record.langs.some((l: string) => l.toLowerCase().startsWith("en"))) {
@@ -216,7 +244,7 @@ function usableAnyPost(data: any): {
   if (!rkey) return null;
   const replyRootUri = record.reply?.root?.uri as string | undefined;
   const replyRootCid = record.reply?.root?.cid as string | undefined;
-  return { text, did, rkey, cid, replyRootUri, replyRootCid, embed };
+  return { text, did, rkey, cid, replyRootUri, replyRootCid, embed, isNsfw };
 }
 
 function postUri(did: string, rkey: string): string {
@@ -227,9 +255,7 @@ function postUri(did: string, rkey: string): string {
 function MessageEmbedView({ embed }: { embed: MessageEmbed }) {
   if (embed.kind === "images") {
     return (
-      <div
-        className={`embed-images count-${Math.min(embed.images.length, 4)}`}
-      >
+      <div className={`embed-images count-${Math.min(embed.images.length, 4)}`}>
         {embed.images.map((img, i) => (
           <img key={i} src={img.url} alt={img.alt || ""} loading="lazy" />
         ))}
@@ -293,9 +319,9 @@ interface ThreadNode {
   replies?: ThreadNode[];
 }
 
-function extractThreadPosts(node: ThreadNode | undefined): NonNullable<
-  ThreadNode["post"]
->[] {
+function extractThreadPosts(
+  node: ThreadNode | undefined,
+): NonNullable<ThreadNode["post"]>[] {
   if (!node) return [];
   // Skip "notFoundPost" or "blockedPost" nodes
   if (node.$type && node.$type !== "app.bsky.feed.defs#threadViewPost") {
@@ -340,7 +366,7 @@ export function FakeMessages() {
     Map<string, Conversation>
   >(new Map());
   const [groupsConvos, setGroupsConvos] = useState<Map<string, Conversation>>(
-    new Map()
+    new Map(),
   );
 
   const [accountsActiveId, setAccountsActiveId] = useState<string | null>(null);
@@ -351,9 +377,17 @@ export function FakeMessages() {
   const [signInOpen, setSignInOpen] = useState(false);
   const [signInHandle, setSignInHandle] = useState("");
   const [postStatus, setPostStatus] = useState<
-    { kind: "idle" } | { kind: "posting" } | { kind: "posted"; uri: string } | { kind: "error"; message: string }
+    | { kind: "idle" }
+    | { kind: "posting" }
+    | { kind: "posted"; uri: string }
+    | { kind: "error"; message: string }
   >({ kind: "idle" });
-  // Session score: real Bluesky replies posted.
+  // Sidebar filter: show only conversations the user has replied to.
+  const [showRepliedOnly, setShowRepliedOnly] = useState(false);
+  // Whether to allow self-labeled NSFW posts through the firehose intake.
+  const [showNsfw, setShowNsfw] = useState(loadStoredShowNsfw);
+  const showNsfwRef = useRef(showNsfw);
+  // Session score: every reply sent (fake or real Bluesky post).
   const [replyTimestamps, setReplyTimestamps] = useState<number[]>([]);
   const [_rateTick, setRateTick] = useState(0);
   const auth = useBskyAuth();
@@ -367,6 +401,27 @@ export function FakeMessages() {
 
   const pendingQueue = useRef<PendingDelivery[]>([]);
   const lastFirehoseAt = useRef(0);
+  // URIs of replies the user has posted, mapped to {mode, conversationId} so an
+  // incoming firehose reply to one of them can be routed back into that chat.
+  const myReplyUris = useRef<
+    Map<string, { mode: MessagesMode; conversationId: string }>
+  >(new Map());
+
+  // Add a tracked reply URI, evicting the oldest once we exceed the cap so the
+  // map can't grow without bound over a long session.
+  const trackReplyUri = useCallback(
+    (uri: string, target: { mode: MessagesMode; conversationId: string }) => {
+      const map = myReplyUris.current;
+      map.set(uri, target);
+      const MAX = 200;
+      while (map.size > MAX) {
+        const oldest = map.keys().next().value;
+        if (oldest === undefined) break;
+        map.delete(oldest);
+      }
+    },
+    [],
+  );
 
   // Refs so firehose callback stays stable but reads latest mode/active id
   const activeIdsRef = useRef({
@@ -382,6 +437,15 @@ export function FakeMessages() {
       // ignore
     }
   }, [mode]);
+
+  useEffect(() => {
+    showNsfwRef.current = showNsfw;
+    try {
+      localStorage.setItem(NSFW_STORAGE_KEY, showNsfw ? "1" : "0");
+    } catch {
+      // ignore
+    }
+  }, [showNsfw]);
 
   useEffect(() => {
     activeIdsRef.current = {
@@ -413,11 +477,7 @@ export function FakeMessages() {
       }
       const backlog = pendingQueue.current.length;
       const delay =
-        backlog > 8
-          ? 120
-          : backlog > 3
-            ? 200
-            : 250 + Math.random() * 250;
+        backlog > 8 ? 120 : backlog > 3 ? 200 : 250 + Math.random() * 250;
       timeout = setTimeout(tick, delay);
     };
     tick();
@@ -426,8 +486,7 @@ export function FakeMessages() {
 
   function deliverMessage(p: PendingDelivery) {
     const activeId = activeIdsRef.current[p.mode];
-    const setter =
-      p.mode === "accounts" ? setAccountsConvos : setGroupsConvos;
+    const setter = p.mode === "accounts" ? setAccountsConvos : setGroupsConvos;
 
     setter((prev) => {
       const next = new Map(prev);
@@ -438,8 +497,7 @@ export function FakeMessages() {
       let authorColor: string | undefined;
       if (p.authorDid) {
         const prof = profileResolver.peek(p.authorDid);
-        authorName =
-          prof?.displayName || prof?.handle || shortDid(p.authorDid);
+        authorName = prof?.displayName || prof?.handle || shortDid(p.authorDid);
         authorColor = colorForDid(p.authorDid);
       }
 
@@ -467,7 +525,9 @@ export function FakeMessages() {
         isTyping: false,
         lastActivity: p.timestamp,
         unreadCount:
-          p.conversationId !== activeId ? conv.unreadCount + 1 : conv.unreadCount,
+          p.conversationId !== activeId
+            ? conv.unreadCount + 1
+            : conv.unreadCount,
       };
       next.set(p.conversationId, updated);
       return next;
@@ -476,67 +536,66 @@ export function FakeMessages() {
 
   // ---- Mode-specific firehose handling ---------------------------------
 
-  const handleAccountsFirehose = useCallback(
-    (data: any) => {
-      const post = usableAnyPost(data);
-      if (!post) return;
-      // Fresh posts only: a reply was directed at someone else, so it reads as
-      // a non-sequitur when shown as that account texting you directly.
-      if (post.replyRootUri) return;
-      profileResolver.get(post.did);
+  const handleAccountsFirehose = useCallback((data: any) => {
+    const post = usableAnyPost(data);
+    if (!post) return;
+    // Skip self-labeled NSFW unless the user has opted in.
+    if (post.isNsfw && !showNsfwRef.current) return;
+    // Fresh posts only: a reply was directed at someone else, so it reads as
+    // a non-sequitur when shown as that account texting you directly.
+    if (post.replyRootUri) return;
+    profileResolver.get(post.did);
 
-      // Route post to the author's own conversation
-      setAccountsConvos((prev) => {
-        const next = new Map(prev);
-        const existing = next.get(post.did);
-        const prof = profileResolver.peek(post.did);
-        const displayName =
-          prof?.displayName || prof?.handle || shortDid(post.did);
-        const subtitle = prof?.handle ? `@${prof.handle}` : undefined;
+    // Route post to the author's own conversation
+    setAccountsConvos((prev) => {
+      const next = new Map(prev);
+      const existing = next.get(post.did);
+      const prof = profileResolver.peek(post.did);
+      const displayName =
+        prof?.displayName || prof?.handle || shortDid(post.did);
+      const subtitle = prof?.handle ? `@${prof.handle}` : undefined;
 
-        if (existing) {
-          next.set(post.did, {
-            ...existing,
-            displayName,
-            subtitle,
-            avatarUrl: prof?.avatar,
-            isTyping: true,
-          });
-        } else {
-          if (next.size >= MAX_ACCOUNT_CONVOS) {
-            evictOldestUnlocked(next);
-          }
-          next.set(post.did, {
-            id: post.did,
-            kind: "accounts",
-            displayName,
-            subtitle,
-            avatarColor: colorForDid(post.did),
-            avatarInitial: (displayName[0] || "?").toUpperCase(),
-            avatarUrl: prof?.avatar,
-            messages: [],
-            unreadCount: 0,
-            isTyping: true,
-            lastActivity: Date.now(),
-          });
+      if (existing) {
+        next.set(post.did, {
+          ...existing,
+          displayName,
+          subtitle,
+          avatarUrl: prof?.avatar,
+          isTyping: true,
+        });
+      } else {
+        if (next.size >= MAX_ACCOUNT_CONVOS) {
+          evictOldestUnlocked(next);
         }
-        return next;
-      });
+        next.set(post.did, {
+          id: post.did,
+          kind: "accounts",
+          displayName,
+          subtitle,
+          avatarColor: colorForDid(post.did),
+          avatarInitial: (displayName[0] || "?").toUpperCase(),
+          avatarUrl: prof?.avatar,
+          messages: [],
+          unreadCount: 0,
+          isTyping: true,
+          lastActivity: Date.now(),
+        });
+      }
+      return next;
+    });
 
-      // Queue this post for delivery into the author's conversation
-      pendingQueue.current.push({
-        mode: "accounts",
-        conversationId: post.did,
-        text: post.text,
-        timestamp: Date.now(),
-        did: post.did,
-        rkey: post.rkey,
-        cid: post.cid,
-        embed: post.embed,
-      });
-    },
-    []
-  );
+    // Queue this post for delivery into the author's conversation
+    pendingQueue.current.push({
+      mode: "accounts",
+      conversationId: post.did,
+      text: post.text,
+      timestamp: Date.now(),
+      did: post.did,
+      rkey: post.rkey,
+      cid: post.cid,
+      embed: post.embed,
+    });
+  }, []);
 
   const backfillThread = useCallback(async (rootUri: string) => {
     if (backfilledThreads.has(rootUri)) return;
@@ -568,8 +627,7 @@ export function FakeMessages() {
 
       const messages: Message[] = posts
         .map((p) => {
-          const text =
-            typeof p.record?.text === "string" ? p.record.text : "";
+          const text = typeof p.record?.text === "string" ? p.record.text : "";
           const filtered = baseTextFilter(text, !!p.record?.langs);
           const finalText = filtered ?? text.trim();
           if (!finalText) return null;
@@ -607,7 +665,7 @@ export function FakeMessages() {
           .slice(-MAX_MESSAGES_PER_CONVO);
 
         const mergedParticipants = new Set<string>(
-          existing?.participants || []
+          existing?.participants || [],
         );
         for (const did of participants) mergedParticipants.add(did);
 
@@ -647,6 +705,8 @@ export function FakeMessages() {
   const handleGroupsFirehose = useCallback((data: any) => {
     const post = usableAnyPost(data);
     if (!post) return;
+    // Skip self-labeled NSFW unless the user has opted in.
+    if (post.isNsfw && !showNsfwRef.current) return;
     // Root URI: replies use reply.root.uri; originals use their own uri
     const rootUri = post.replyRootUri || postUri(post.did, post.rkey);
     // For originals, the root CID is this post's CID; for replies it's the
@@ -713,8 +773,56 @@ export function FakeMessages() {
     });
   }, []);
 
+  // If this firehose post is a reply to one of the user's own posted replies,
+  // route it back into that conversation as an incoming message and start
+  // tracking it, so an ongoing back-and-forth keeps landing. Returns true when
+  // handled (so the normal intake path can skip it).
+  const routeReplyToMe = useCallback((data: any): boolean => {
+    const parentUri = data.commit?.record?.reply?.parent?.uri;
+    if (typeof parentUri !== "string") return false;
+    const target = myReplyUris.current.get(parentUri);
+    if (!target) return false;
+
+    const post = usableAnyPost(data);
+    if (!post) return false;
+    // Respect the NSFW toggle here too — an unsolicited reply could carry a
+    // label the user has chosen not to see. Return true so the post is still
+    // consumed (not re-routed through the normal intake path).
+    if (post.isNsfw && !showNsfwRef.current) return true;
+
+    profileResolver.get(post.did);
+    pendingQueue.current.unshift({
+      mode: target.mode,
+      conversationId: target.conversationId,
+      text: post.text,
+      timestamp: Date.now(),
+      did: post.did,
+      rkey: post.rkey,
+      cid: post.cid,
+      embed: post.embed,
+      authorDid: post.did,
+    });
+    // Track this new reply too, so the thread can continue.
+    trackReplyUri(postUri(post.did, post.rkey), target);
+    // Surface a typing indicator on that conversation immediately.
+    const setter =
+      target.mode === "accounts" ? setAccountsConvos : setGroupsConvos;
+    setter((prev) => {
+      const conv = prev.get(target.conversationId);
+      if (!conv) return prev;
+      const next = new Map(prev);
+      next.set(target.conversationId, { ...conv, isTyping: true });
+      return next;
+    });
+    return true;
+  }, [trackReplyUri]);
+
   const handleFirehose = useCallback(
     (data: any) => {
+      // A reply to something the user posted is high-signal and rare — route it
+      // back into the conversation, bypassing the intake throttle entirely.
+      if (routeReplyToMe(data)) return;
+
       // In Groups mode, trigger thread backfill on every reply we observe —
       // regardless of intake throttle. Jetstream alone rarely gives us ≥2
       // participants in the same thread during a session, so we grab the
@@ -751,7 +859,12 @@ export function FakeMessages() {
       }
       lastFirehoseAt.current = now;
     },
-    [handleAccountsFirehose, handleGroupsFirehose, backfillThread]
+    [
+      handleAccountsFirehose,
+      handleGroupsFirehose,
+      backfillThread,
+      routeReplyToMe,
+    ],
   );
 
   useJetStream({
@@ -772,11 +885,17 @@ export function FakeMessages() {
   const setCurrentConvos =
     mode === "accounts" ? setAccountsConvos : setGroupsConvos;
 
-  // For groups mode: only show conversations with >=2 participants
+  // For groups mode: only show conversations with >=2 participants.
+  // When the filter is on, also restrict to conversations the user replied to.
   const visibleConvos = Array.from(currentConvos.values()).filter((c) => {
+    if (showRepliedOnly && !c.userReplied) return false;
     if (c.kind !== "groups") return true;
     return (c.participants?.size || 0) >= 2;
   });
+
+  const repliedCount = Array.from(currentConvos.values()).filter(
+    (c) => c.userReplied,
+  ).length;
 
   // Promote resolved profiles into conversation display names (accounts mode)
   useEffect(() => {
@@ -896,6 +1015,8 @@ export function FakeMessages() {
       return next;
     });
     setInputText("");
+    // Count every reply toward the session score, fake or real.
+    setReplyTimestamps((ts) => [...ts, Date.now()]);
 
     // If signed in and we have a reply target, actually post to Bluesky
     if (canPostToBluesky && replyTarget) {
@@ -903,7 +1024,11 @@ export function FakeMessages() {
       try {
         const uri = await postReply(text, replyTarget);
         setPostStatus({ kind: "posted", uri });
-        setReplyTimestamps((ts) => [...ts, Date.now()]);
+        // Track this reply so a response to it can be routed back into the chat.
+        trackReplyUri(uri, {
+          mode: modeRef.current,
+          conversationId: currentActiveId,
+        });
         setCurrentConvos((prev) => {
           const next = new Map(prev);
           const conv = next.get(currentActiveId);
@@ -942,6 +1067,9 @@ export function FakeMessages() {
   const handleSelectConversation = (id: string) => {
     setCurrentActiveId(id);
     setShowTapback(null);
+    // Focus the composer so you can immediately type after navigating
+    // (whether by click or arrow keys).
+    requestAnimationFrame(() => inputRef.current?.focus());
     setCurrentConvos((prev) => {
       const next = new Map(prev);
       const conv = next.get(id);
@@ -963,7 +1091,7 @@ export function FakeMessages() {
         messages: conv.messages.map((m) =>
           m.id === messageId
             ? { ...m, reaction: m.reaction === reaction ? undefined : reaction }
-            : m
+            : m,
         ),
       });
       return next;
@@ -1004,13 +1132,20 @@ export function FakeMessages() {
       // Don't intercept when typing in an input
       const tag = (e.target as HTMLElement)?.tagName;
       const isInput = tag === "INPUT" || tag === "TEXTAREA";
+      // Arrow nav works from the list, and from the (auto-focused) composer
+      // only while it's empty — so an in-progress draft keeps normal cursor
+      // movement instead of jumping conversations.
+      const canArrowNav = !isInput || inputText.length === 0;
 
-      if (e.key === "ArrowUp" || (e.key === "j" && !isInput)) {
+      if (canArrowNav && (e.key === "ArrowUp" || (e.key === "j" && !isInput))) {
         e.preventDefault();
         const idx = sortedConvos.findIndex((c) => c.id === currentActiveId);
         const prev = idx > 0 ? idx - 1 : sortedConvos.length - 1;
         if (sortedConvos[prev]) handleSelectConversation(sortedConvos[prev].id);
-      } else if (e.key === "ArrowDown" || (e.key === "k" && !isInput)) {
+      } else if (
+        canArrowNav &&
+        (e.key === "ArrowDown" || (e.key === "k" && !isInput))
+      ) {
         e.preventDefault();
         const idx = sortedConvos.findIndex((c) => c.id === currentActiveId);
         const next = idx < sortedConvos.length - 1 ? idx + 1 : 0;
@@ -1024,7 +1159,7 @@ export function FakeMessages() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [sortedConvos, currentActiveId, handleSelectConversation]);
+  }, [sortedConvos, currentActiveId, handleSelectConversation, inputText]);
 
   return (
     <div className="fake-messages">
@@ -1033,7 +1168,7 @@ export function FakeMessages() {
           <Link to="/" className="back-button">
             &lsaquo;
           </Link>
-          <h1>Messages</h1>
+          <h1>@Messages</h1>
           {totalUnread > 0 && (
             <span className="total-unread">{totalUnread}</span>
           )}
@@ -1093,21 +1228,20 @@ export function FakeMessages() {
         {replyTimestamps.length > 0 &&
           (() => {
             const now = Date.now();
-            const last60 = replyTimestamps.filter((t) => now - t < 60_000)
-              .length;
+            const last60 = replyTimestamps.filter(
+              (t) => now - t < 60_000,
+            ).length;
             const firstAt = replyTimestamps[0];
             const elapsedMin = Math.max((now - firstAt) / 60_000, 1 / 60);
             const avg = replyTimestamps.length / elapsedMin;
             return (
               <div className="score-bar" aria-live="polite">
                 <div className="score-main">
-                  <span className="score-value">
-                    {replyTimestamps.length}
-                  </span>
+                  <span className="score-value">{replyTimestamps.length}</span>
                   <span className="score-label">
                     {replyTimestamps.length === 1
-                      ? "real reply sent"
-                      : "real replies sent"}
+                      ? "reply sent"
+                      : "replies sent"}
                   </span>
                 </div>
                 <div className="score-rate">
@@ -1139,6 +1273,18 @@ export function FakeMessages() {
           </button>
         </div>
 
+        {(repliedCount > 0 || showRepliedOnly) && (
+          <div className="sidebar-filters">
+            <button
+              className={`filter-pill ${showRepliedOnly ? "active" : ""}`}
+              onClick={() => setShowRepliedOnly((v) => !v)}
+              title="Show only conversations you've replied to"
+            >
+              {showRepliedOnly ? "← show all" : `★ replied (${repliedCount})`}
+            </button>
+          </div>
+        )}
+
         <div className="conversation-list">
           {sortedConvos.length === 0 && (
             <div className="empty-list">
@@ -1150,17 +1296,24 @@ export function FakeMessages() {
           {sortedConvos.map((conv) => (
             <div
               key={conv.id}
-              className={`conversation-item ${conv.id === currentActiveId ? "active" : ""}`}
+              className={`conversation-item ${conv.id === currentActiveId ? "active" : ""} ${conv.userReplied ? "replied" : ""}`}
               onClick={() => handleSelectConversation(conv.id)}
             >
               <ConversationAvatar conv={conv} />
               <div className="conversation-preview">
                 <div className="conversation-top">
-                  <span className="contact-name">{conv.displayName}</span>
+                  <span className="contact-name">
+                    {conv.userReplied && (
+                      <span className="replied-star" title="You replied">
+                        ★{" "}
+                      </span>
+                    )}
+                    {conv.displayName}
+                  </span>
                   {conv.messages.length > 0 && (
                     <span className="message-time">
                       {dayjs(
-                        conv.messages[conv.messages.length - 1].timestamp
+                        conv.messages[conv.messages.length - 1].timestamp,
                       ).format("h:mm A")}
                     </span>
                   )}
@@ -1184,34 +1337,78 @@ export function FakeMessages() {
             </div>
           ))}
         </div>
+
+        <div className="keyboard-hints">
+          <span>
+            <kbd>↑</kbd>
+            <kbd>↓</kbd> navigate
+          </span>
+          <span>
+            <kbd>↵</kbd> send
+          </span>
+          <span>
+            <kbd>esc</kbd> unfocus
+          </span>
+        </div>
       </div>
 
       <div className="messages-main">
+        <button
+          className={`nsfw-toggle ${showNsfw ? "active" : ""}`}
+          onClick={() => setShowNsfw((v) => !v)}
+          title={
+            showNsfw
+              ? "NSFW content is showing — click to hide"
+              : "Show self-labeled NSFW content"
+          }
+        >
+          {showNsfw ? "NSFW: on" : "NSFW: off"}
+        </button>
         {activeConversation ? (
           <>
             <div className="chat-header">
-              <ConversationAvatar conv={activeConversation} small />
-              <div className="chat-header-text">
-                <span className="chat-contact-name">
-                  {activeConversation.displayName}
-                </span>
-                {activeConversation.subtitle && (
-                  <span className="chat-subtitle">
-                    {activeConversation.subtitle}
-                  </span>
-                )}
-              </div>
+              {(() => {
+                const profileUrl = conversationBskyUrl(activeConversation);
+                const inner = (
+                  <>
+                    <ConversationAvatar conv={activeConversation} small />
+                    <div className="chat-header-text">
+                      <span className="chat-contact-name">
+                        {activeConversation.displayName}
+                      </span>
+                      {activeConversation.subtitle && (
+                        <span className="chat-subtitle">
+                          {activeConversation.subtitle}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                );
+                return profileUrl ? (
+                  <a
+                    className="chat-header-link"
+                    href={profileUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    title={
+                      activeConversation.kind === "accounts"
+                        ? "Open profile on Bluesky"
+                        : "Open thread on Bluesky"
+                    }
+                  >
+                    {inner}
+                  </a>
+                ) : (
+                  inner
+                );
+              })()}
             </div>
 
-            <div
-              className="messages-body"
-              onClick={() => setShowTapback(null)}
-            >
+            <div className="messages-body" onClick={() => setShowTapback(null)}>
               <div className="messages-date-header">Today</div>
               {activeConversation.messages.map((msg, i) => {
                 const prev = activeConversation.messages[i - 1];
-                const showTs =
-                  !prev || msg.timestamp - prev.timestamp > 300000;
+                const showTs = !prev || msg.timestamp - prev.timestamp > 300000;
                 // Show author name above bubble when:
                 // - Groups mode: always for incoming from different authors
                 // - Accounts mode: when the message is from someone OTHER than
@@ -1356,9 +1553,7 @@ export function FakeMessages() {
                 onChange={(e) => setInputText(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && handleSend()}
                 placeholder={
-                  canPostToBluesky
-                    ? "reply to this post..."
-                    : placeholder
+                  canPostToBluesky ? "reply to this post..." : placeholder
                 }
                 className="message-input"
               />
@@ -1394,6 +1589,18 @@ function bskyAppUrlFromUri(uri: string): string {
   return `https://bsky.app/profile/${match[1]}/post/${match[2]}`;
 }
 
+// The Bluesky link for a conversation header: the account's profile in accounts
+// mode; the thread on bsky.app in groups mode. Null if neither applies.
+function conversationBskyUrl(conv: Conversation): string | null {
+  if (conv.kind === "accounts") {
+    return `https://bsky.app/profile/${conv.id}`;
+  }
+  if (conv.rootUri) {
+    return bskyAppUrlFromUri(conv.rootUri);
+  }
+  return null;
+}
+
 function replyTargetLink(r: ReplyTarget): string {
   return bskyAppUrlFromUri(r.parentUri);
 }
@@ -1414,12 +1621,11 @@ function namesForParticipants(participants: Set<string>): {
     const p = profileResolver.peek(d);
     return p?.displayName || p?.handle || shortDid(d);
   });
-  const display = resolved.slice(0, 2).join(", ") +
+  const display =
+    resolved.slice(0, 2).join(", ") +
     (resolved.length > 2 ? ` + ${resolved.length - 2}` : "");
   const subtitle =
-    resolved.length >= 2
-      ? `${resolved.length} people`
-      : "1 person";
+    resolved.length >= 2 ? `${resolved.length} people` : "1 person";
   return { display, subtitle };
 }
 
@@ -1427,11 +1633,13 @@ function renderPreview(conv: Conversation) {
   const last = conv.messages[conv.messages.length - 1];
   if (!last) return null;
   const prefix =
-    conv.kind === "groups" && last.fromContact && last.authorName
-      ? <span className="you-prefix" style={{ color: last.authorColor }}>{last.authorName}: </span>
-      : !last.fromContact
-        ? <span className="you-prefix">You: </span>
-        : null;
+    conv.kind === "groups" && last.fromContact && last.authorName ? (
+      <span className="you-prefix" style={{ color: last.authorColor }}>
+        {last.authorName}:{" "}
+      </span>
+    ) : !last.fromContact ? (
+      <span className="you-prefix">You: </span>
+    ) : null;
   // When the message has no text, describe its attachment like iMessage does.
   let snippet: string;
   if (last.text) {
@@ -1469,7 +1677,11 @@ function ConversationAvatar({
       />
     );
   }
-  if (conv.kind === "groups" && conv.participants && conv.participants.size > 1) {
+  if (
+    conv.kind === "groups" &&
+    conv.participants &&
+    conv.participants.size > 1
+  ) {
     const participants = Array.from(conv.participants).slice(0, 3);
     return (
       <div className={`contact-avatar ${size} group`}>
@@ -1483,7 +1695,9 @@ function ConversationAvatar({
               className={`group-avatar-tile tile-${i}`}
               style={{
                 backgroundColor: prof?.avatar ? "transparent" : color,
-                backgroundImage: prof?.avatar ? `url(${prof.avatar})` : undefined,
+                backgroundImage: prof?.avatar
+                  ? `url(${prof.avatar})`
+                  : undefined,
               }}
             >
               {!prof?.avatar && initial.toUpperCase()}

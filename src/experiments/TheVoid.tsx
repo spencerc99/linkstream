@@ -130,7 +130,7 @@ export function TheVoid() {
 
   return (
     <div className="the-void" onClick={() => inputRef.current?.focus()}>
-      <Link to="/HAH" className="void-back">
+      <Link to="/" className="void-back">
         &larr;
       </Link>
 

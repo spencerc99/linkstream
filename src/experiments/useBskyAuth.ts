@@ -22,8 +22,14 @@ export function useBskyAuth() {
     // Otherwise the page stays in "idle" and the user has to click sign-in
     // to trigger any OAuth work. This prevents the oauth-client-browser
     // from normalizing the URL's hostname (localhost → 127.0.0.1) on mount.
-    const params = new URLSearchParams(location.search);
-    const isCallback = params.has("code") && params.has("state");
+    // The loopback OAuth client returns the authorization response in the URL
+    // fragment (#state=...&code=...), not the query string — so check both.
+    const search = new URLSearchParams(location.search);
+    const hash = new URLSearchParams(location.hash.replace(/^#/, ""));
+    const isCallback =
+      (search.has("code") && search.has("state")) ||
+      (hash.has("code") && hash.has("state")) ||
+      hash.has("state"); // some flows return state (+ code/iss) in the fragment
     const pendingHandle = sessionStorage.getItem(PENDING_SIGNIN_KEY);
     const hasStoredSession =
       typeof localStorage !== "undefined" &&
