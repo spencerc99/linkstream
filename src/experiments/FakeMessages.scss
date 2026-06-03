@@ -1191,32 +1191,37 @@
   }
 
   // ---- Mobile: single pane at a time -------------------------------------
-  // Below the breakpoint the sidebar (conversation list) and the chat are
-  // each full-width and only one shows at a time, switched by the
-  // `viewing-chat` class (set when a conversation is selected).
+  // Below the breakpoint the conversation list and the chat are laid out as a
+  // 200%-wide horizontal track; the root slides between them by translating
+  // the track. The `viewing-chat` class (set when a conversation is selected)
+  // shifts to the chat; a live edge-swipe can offset it via --drag-x.
   @media (max-width: 768px) {
-    .messages-sidebar {
-      width: 100%;
-      border-right: none;
-    }
+    overflow: hidden;
+    // The track shifts to show the list (0) or the chat (-50% of the 200%
+    // track). --drag-x is a live finger offset in px during an edge swipe.
+    --drag-x: 0px;
+    transform: translateX(calc(var(--base-shift, 0%) + var(--drag-x)));
+    width: 200%;
+    transition: transform 0.3s ease;
 
-    .messages-main {
-      width: 100%;
-    }
-
-    // Default (no conversation selected): show the list, hide the chat.
-    .messages-main {
-      display: none;
+    // While the finger is down we follow it 1:1, so kill the easing.
+    &.dragging {
+      transition: none;
     }
 
     &.viewing-chat {
-      .messages-sidebar {
-        display: none;
-      }
+      --base-shift: -50%;
+    }
 
-      .messages-main {
-        display: flex;
-      }
+    .messages-sidebar {
+      width: 50%;
+      border-right: none;
+      flex-shrink: 0;
+    }
+
+    .messages-main {
+      width: 50%;
+      flex-shrink: 0;
     }
 
     // Touch devices don't need the arrow-key hints. Scoped under the sidebar

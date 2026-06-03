@@ -1235,6 +1235,93 @@ export function FakeMessages() {
 
   // Keyboard navigation: ↑/↓ to move between conversations, Esc to focus input
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Mobile edge-swipe: a drag starting at the left edge of the chat pane
+  // follows the finger and, past a threshold, returns to the conversation
+  // list. We mutate the root's CSS vars/classes directly so the drag stays
+  // smooth without re-rendering on every touchmove.
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root) return;
+    // Only relevant while a conversation is open (chat is showing).
+    if (!currentActiveId) return;
+
+    const EDGE_PX = 30; // start zone from the left edge
+    let startX = 0;
+    let startY = 0;
+    let dragging = false;
+    let decided = false; // whether we've committed to a horizontal drag
+
+    const reset = () => {
+      root.classList.remove("dragging");
+      root.style.removeProperty("--drag-x");
+      dragging = false;
+      decided = false;
+    };
+
+    const onStart = (e: TouchEvent) => {
+      if (e.touches.length !== 1) return;
+      const t = e.touches[0];
+      if (t.clientX > EDGE_PX) return; // not an edge swipe
+      startX = t.clientX;
+      startY = t.clientY;
+      dragging = true;
+      decided = false;
+    };
+
+    const onMove = (e: TouchEvent) => {
+      if (!dragging) return;
+      const t = e.touches[0];
+      const dx = t.clientX - startX;
+      const dy = t.clientY - startY;
+      if (!decided) {
+        // Ignore vertical-dominant gestures so list scrolling still works.
+        if (Math.abs(dy) > Math.abs(dx)) {
+          dragging = false;
+          return;
+        }
+        if (Math.abs(dx) < 8) return; // wait until intent is clear
+        decided = true;
+        root.classList.add("dragging");
+      }
+      // Only track rightward drags (back toward the list).
+      const clamped = Math.max(0, dx);
+      e.preventDefault();
+      root.style.setProperty("--drag-x", `${clamped}px`);
+    };
+
+    const onEnd = () => {
+      if (!dragging || !decided) {
+        reset();
+        return;
+      }
+      const dragX = parseFloat(
+        getComputedStyle(root).getPropertyValue("--drag-x"),
+      );
+      reset();
+      // Past a third of the viewport → commit to the list view. Call the
+      // mode-specific setter directly so this effect doesn't depend on the
+      // per-render `setCurrentActiveId` identity (which would re-subscribe the
+      // touch listeners on every firehose-driven render).
+      if (dragX > window.innerWidth / 3) {
+        if (modeRef.current === "accounts") setAccountsActiveId(null);
+        else setGroupsActiveId(null);
+      }
+    };
+
+    root.addEventListener("touchstart", onStart, { passive: true });
+    root.addEventListener("touchmove", onMove, { passive: false });
+    root.addEventListener("touchend", onEnd);
+    root.addEventListener("touchcancel", onEnd);
+    return () => {
+      root.removeEventListener("touchstart", onStart);
+      root.removeEventListener("touchmove", onMove);
+      root.removeEventListener("touchend", onEnd);
+      root.removeEventListener("touchcancel", onEnd);
+      reset();
+    };
+  }, [currentActiveId]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1271,7 +1358,10 @@ export function FakeMessages() {
   }, [sortedConvos, currentActiveId, handleSelectConversation, inputText]);
 
   return (
-    <div className={`fake-messages ${currentActiveId ? "viewing-chat" : ""}`}>
+    <div
+      ref={rootRef}
+      className={`fake-messages ${currentActiveId ? "viewing-chat" : ""}`}
+    >
       <div className="messages-sidebar">
         <div className="sidebar-header">
           <Link to="/" className="back-button">
