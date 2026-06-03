@@ -14,6 +14,7 @@
     "@atproto/oauth-client-browser": "^0.3.41",
     "@mlc-ai/web-llm": "^0.2.82",
     "dayjs": "^1.11.13",
+    "framer-motion": "^12.40.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^7.14.0",
@@ -28,9 +29,9 @@
     "eslint": "^8.55.0",
     "eslint-plugin-react-hooks": "^4.6.0",
     "eslint-plugin-react-refresh": "^0.4.5",
-    "typescript": "^5.2.2",
     "glob": "^10.3.10",
     "path": "^0.12.7",
+    "typescript": "^5.2.2",
     "vite": "^5.0.8"
   }
 }

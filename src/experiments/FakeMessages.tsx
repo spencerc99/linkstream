@@ -1,4 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { motion, useMotionValue, animate } from "framer-motion";
 import { useJetStream } from "../hooks/useJetStream";
 import { Link } from "react-router-dom";
 import dayjs from "dayjs";
@@ -1237,91 +1238,65 @@ export function FakeMessages() {
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Mobile edge-swipe: a drag starting at the left edge of the chat pane
-  // follows the finger and, past a threshold, returns to the conversation
-  // list. We mutate the root's CSS vars/classes directly so the drag stays
-  // smooth without re-rendering on every touchmove.
+  // Mobile slide: the list and chat sit in a track that's translated in
+  // pixels (Framer Motion). `trackWidth` is one pane's width (the viewport on
+  // mobile); the track shifts by -trackWidth to reveal the chat. `isMobile`
+  // gates the gesture and the slide so desktop keeps both panes side by side.
+  const slideX = useMotionValue(0);
+  const [trackWidth, setTrackWidth] = useState(0);
+  const [isMobile, setIsMobile] = useState(false);
+
   useEffect(() => {
-    const root = rootRef.current;
-    if (!root) return;
-    // Only relevant while a conversation is open (chat is showing).
-    if (!currentActiveId) return;
-
-    const EDGE_PX = 30; // start zone from the left edge
-    let startX = 0;
-    let startY = 0;
-    let dragging = false;
-    let decided = false; // whether we've committed to a horizontal drag
-
-    const reset = () => {
-      root.classList.remove("dragging");
-      root.style.removeProperty("--drag-x");
-      dragging = false;
-      decided = false;
+    const mql = window.matchMedia("(max-width: 768px)");
+    const sync = () => {
+      setIsMobile(mql.matches);
+      setTrackWidth(rootRef.current?.clientWidth ?? window.innerWidth);
     };
-
-    const onStart = (e: TouchEvent) => {
-      if (e.touches.length !== 1) return;
-      const t = e.touches[0];
-      if (t.clientX > EDGE_PX) return; // not an edge swipe
-      startX = t.clientX;
-      startY = t.clientY;
-      dragging = true;
-      decided = false;
+    sync();
+    mql.addEventListener("change", sync);
+    window.addEventListener("resize", sync);
+    return () => {
+      mql.removeEventListener("change", sync);
+      window.removeEventListener("resize", sync);
     };
+  }, []);
 
-    const onMove = (e: TouchEvent) => {
-      if (!dragging) return;
-      const t = e.touches[0];
-      const dx = t.clientX - startX;
-      const dy = t.clientY - startY;
-      if (!decided) {
-        // Ignore vertical-dominant gestures so list scrolling still works.
-        if (Math.abs(dy) > Math.abs(dx)) {
-          dragging = false;
-          return;
-        }
-        if (Math.abs(dx) < 8) return; // wait until intent is clear
-        decided = true;
-        root.classList.add("dragging");
-      }
-      // Only track rightward drags (back toward the list).
-      const clamped = Math.max(0, dx);
-      e.preventDefault();
-      root.style.setProperty("--drag-x", `${clamped}px`);
-    };
+  // Animate the track to the list (0) or the chat (-trackWidth) whenever the
+  // selection or layout changes. Spring gives a natural settle.
+  useEffect(() => {
+    const target = isMobile && currentActiveId ? -trackWidth : 0;
+    const controls = animate(slideX, target, {
+      type: "spring",
+      stiffness: 500,
+      damping: 40,
+    });
+    return controls.stop;
+  }, [isMobile, currentActiveId, trackWidth, slideX]);
 
-    const onEnd = () => {
-      if (!dragging || !decided) {
-        reset();
-        return;
-      }
-      const dragX = parseFloat(
-        getComputedStyle(root).getPropertyValue("--drag-x"),
-      );
-      reset();
-      // Past a third of the viewport → commit to the list view. Call the
-      // mode-specific setter directly so this effect doesn't depend on the
-      // per-render `setCurrentActiveId` identity (which would re-subscribe the
-      // touch listeners on every firehose-driven render).
-      if (dragX > window.innerWidth / 3) {
+  // Edge-swipe back: a drag that begins near the left edge of the chat and
+  // moves far/fast enough returns to the list. Framer handles the live drag;
+  // we just decide on release.
+  const handleDragEnd = useCallback(
+    (
+      _e: unknown,
+      info: { offset: { x: number }; velocity: { x: number } },
+    ) => {
+      const committed =
+        info.offset.x > trackWidth / 3 || info.velocity.x > 500;
+      if (committed) {
         if (modeRef.current === "accounts") setAccountsActiveId(null);
         else setGroupsActiveId(null);
+      } else {
+        // Snap back to the chat.
+        animate(slideX, -trackWidth, {
+          type: "spring",
+          stiffness: 500,
+          damping: 40,
+        });
       }
-    };
-
-    root.addEventListener("touchstart", onStart, { passive: true });
-    root.addEventListener("touchmove", onMove, { passive: false });
-    root.addEventListener("touchend", onEnd);
-    root.addEventListener("touchcancel", onEnd);
-    return () => {
-      root.removeEventListener("touchstart", onStart);
-      root.removeEventListener("touchmove", onMove);
-      root.removeEventListener("touchend", onEnd);
-      root.removeEventListener("touchcancel", onEnd);
-      reset();
-    };
-  }, [currentActiveId]);
+    },
+    [trackWidth, slideX],
+  );
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1362,7 +1337,15 @@ export function FakeMessages() {
       ref={rootRef}
       className={`fake-messages ${currentActiveId ? "viewing-chat" : ""}`}
     >
-      <div className="messages-track">
+      <motion.div
+        className="messages-track"
+        style={isMobile ? { x: slideX } : undefined}
+        drag={isMobile && currentActiveId ? "x" : false}
+        dragConstraints={{ left: -trackWidth, right: 0 }}
+        dragElastic={0.05}
+        dragDirectionLock
+        onDragEnd={handleDragEnd}
+      >
         <div className="messages-sidebar">
           <div className="sidebar-header">
             <Link to="/" className="back-button">
@@ -1812,7 +1795,7 @@ export function FakeMessages() {
             </div>
           )}
         </div>
-      </div>
+      </motion.div>
     </div>
   );
 }
