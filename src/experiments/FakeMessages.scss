@@ -9,6 +9,13 @@
   background: #fff;
   color: #000;
 
+  // On desktop the track is transparent: the sidebar and chat are laid out
+  // directly as flex children of .fake-messages. On mobile it becomes the
+  // sliding 200%-wide track (see the media query below).
+  .messages-track {
+    display: contents;
+  }
+
   .messages-sidebar {
     width: 320px;
     border-right: 1px solid #d1d1d6;
@@ -1196,16 +1203,25 @@
   // the track. The `viewing-chat` class (set when a conversation is selected)
   // shifts to the chat; a live edge-swipe can offset it via --drag-x.
   @media (max-width: 768px) {
+    // The root is a fixed-width viewport that clips the wider sliding track.
     overflow: hidden;
-    // The track shifts to show the list (0) or the chat (-50% of the 200%
-    // track). --drag-x is a live finger offset in px during an edge swipe.
+    // --drag-x is a live finger offset in px during an edge swipe; it and
+    // --base-shift are read by .messages-track below (CSS vars inherit).
     --drag-x: 0px;
-    transform: translateX(calc(var(--base-shift, 0%) + var(--drag-x)));
-    width: 200%;
-    transition: transform 0.3s ease;
+
+    .messages-track {
+      display: flex;
+      width: 200%;
+      height: 100%;
+      // Don't let the flex parent shrink the track below its 200% width.
+      flex-shrink: 0;
+      // Shift to show the list (0) or the chat (-50% of the 200% track).
+      transform: translateX(calc(var(--base-shift, 0%) + var(--drag-x)));
+      transition: transform 0.3s ease;
+    }
 
     // While the finger is down we follow it 1:1, so kill the easing.
-    &.dragging {
+    &.dragging .messages-track {
       transition: none;
     }
 
@@ -1213,15 +1229,15 @@
       --base-shift: -50%;
     }
 
+    // Each pane is exactly half the 200% track. flex: 0 0 50% overrides the
+    // desktop `flex: 1` on .messages-main so it can't collapse or grow.
     .messages-sidebar {
-      width: 50%;
+      flex: 0 0 50%;
       border-right: none;
-      flex-shrink: 0;
     }
 
     .messages-main {
-      width: 50%;
-      flex-shrink: 0;
+      flex: 0 0 50%;
     }
 
     // Touch devices don't need the arrow-key hints. Scoped under the sidebar
