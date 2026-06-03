@@ -211,10 +211,7 @@ function extractEmbed(record: any, did: string): MessageEmbed | undefined {
 }
 
 // Pull an image or external link-card embed out of a media embed object.
-function extractMediaEmbed(
-  embed: any,
-  did: string,
-): MessageEmbed | undefined {
+function extractMediaEmbed(embed: any, did: string): MessageEmbed | undefined {
   const type = embed?.$type as string | undefined;
   if (!type) return undefined;
 
@@ -326,9 +323,7 @@ function MessageEmbedView({ embed }: { embed: MessageEmbed }) {
                   <span className="quote-handle">@{quoted.authorHandle}</span>
                 </div>
               </div>
-              {quoted.text && (
-                <span className="quote-text">{quoted.text}</span>
-              )}
+              {quoted.text && <span className="quote-text">{quoted.text}</span>}
             </>
           ) : (
             <span className="quote-pending">quoted post</span>
@@ -476,6 +471,8 @@ export function FakeMessages() {
   // Whether incoming texts play the iMessage chime. The sound module owns the
   // setting (so playback can self-gate); this mirrors it for the toggle UI.
   const [soundEnabled, setSoundEnabled] = useState(isMessageSoundEnabled);
+  // Settings popover (sound + NSFW) anchored in the conversation-list header.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Session score: every reply sent (fake or real Bluesky post).
   const [replyTimestamps, setReplyTimestamps] = useState<number[]>([]);
   const [_rateTick, setRateTick] = useState(0);
@@ -486,6 +483,7 @@ export function FakeMessages() {
     const id = setInterval(() => setRateTick((t) => t + 1), 5000);
     return () => clearInterval(id);
   }, []);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const pendingQueue = useRef<PendingDelivery[]>([]);
@@ -569,9 +567,15 @@ export function FakeMessages() {
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout>;
     const tick = () => {
-      if (pendingQueue.current.length > 0) {
-        const msg = pendingQueue.current.shift()!;
-        deliverMessage(msg);
+      // A throw in delivery must not kill the ticker — that would strand every
+      // convo on "typing" forever. Swallow it and keep draining.
+      try {
+        if (pendingQueue.current.length > 0) {
+          const msg = pendingQueue.current.shift()!;
+          deliverMessage(msg);
+        }
+      } catch (err) {
+        console.error("delivery failed", err);
       }
       const backlog = pendingQueue.current.length;
       const delay =
@@ -879,53 +883,56 @@ export function FakeMessages() {
   // route it back into that conversation as an incoming message and start
   // tracking it, so an ongoing back-and-forth keeps landing. Returns true when
   // handled (so the normal intake path can skip it).
-  const routeReplyToMe = useCallback((data: any): boolean => {
-    const parentUri = data.commit?.record?.reply?.parent?.uri;
-    if (typeof parentUri !== "string") return false;
-    const target = myReplyUris.current.get(parentUri);
-    if (!target) return false;
+  const routeReplyToMe = useCallback(
+    (data: any): boolean => {
+      const parentUri = data.commit?.record?.reply?.parent?.uri;
+      if (typeof parentUri !== "string") return false;
+      const target = myReplyUris.current.get(parentUri);
+      if (!target) return false;
 
-    const post = usableAnyPost(data);
-    if (!post) return false;
-    // Respect the NSFW toggle here too — an unsolicited reply could carry a
-    // label the user has chosen not to see. Return true so the post is still
-    // consumed (not re-routed through the normal intake path).
-    if (post.isNsfw && !showNsfwRef.current) return true;
+      const post = usableAnyPost(data);
+      if (!post) return false;
+      // Respect the NSFW toggle here too — an unsolicited reply could carry a
+      // label the user has chosen not to see. Return true so the post is still
+      // consumed (not re-routed through the normal intake path).
+      if (post.isNsfw && !showNsfwRef.current) return true;
 
-    // In Accounts mode each conversation is a single account. A reply to your
-    // post from someone other than that account reads as a non-sequitur, so we
-    // consume it (return true) without routing it into the chat. Groups mode is
-    // intentionally multi-person, so it keeps every replier.
-    if (target.mode === "accounts" && post.did !== target.conversationId) {
+      // In Accounts mode each conversation is a single account. A reply to your
+      // post from someone other than that account reads as a non-sequitur, so we
+      // consume it (return true) without routing it into the chat. Groups mode is
+      // intentionally multi-person, so it keeps every replier.
+      if (target.mode === "accounts" && post.did !== target.conversationId) {
+        return true;
+      }
+
+      profileResolver.get(post.did);
+      pendingQueue.current.unshift({
+        mode: target.mode,
+        conversationId: target.conversationId,
+        text: post.text,
+        timestamp: Date.now(),
+        did: post.did,
+        rkey: post.rkey,
+        cid: post.cid,
+        embed: post.embed,
+        authorDid: post.did,
+      });
+      // Track this new reply too, so the thread can continue.
+      trackReplyUri(postUri(post.did, post.rkey), target);
+      // Surface a typing indicator on that conversation immediately.
+      const setter =
+        target.mode === "accounts" ? setAccountsConvos : setGroupsConvos;
+      setter((prev) => {
+        const conv = prev.get(target.conversationId);
+        if (!conv) return prev;
+        const next = new Map(prev);
+        next.set(target.conversationId, { ...conv, isTyping: true });
+        return next;
+      });
       return true;
-    }
-
-    profileResolver.get(post.did);
-    pendingQueue.current.unshift({
-      mode: target.mode,
-      conversationId: target.conversationId,
-      text: post.text,
-      timestamp: Date.now(),
-      did: post.did,
-      rkey: post.rkey,
-      cid: post.cid,
-      embed: post.embed,
-      authorDid: post.did,
-    });
-    // Track this new reply too, so the thread can continue.
-    trackReplyUri(postUri(post.did, post.rkey), target);
-    // Surface a typing indicator on that conversation immediately.
-    const setter =
-      target.mode === "accounts" ? setAccountsConvos : setGroupsConvos;
-    setter((prev) => {
-      const conv = prev.get(target.conversationId);
-      if (!conv) return prev;
-      const next = new Map(prev);
-      next.set(target.conversationId, { ...conv, isTyping: true });
-      return next;
-    });
-    return true;
-  }, [trackReplyUri]);
+    },
+    [trackReplyUri],
+  );
 
   const handleFirehose = useCallback(
     (data: any) => {
@@ -1238,19 +1245,29 @@ export function FakeMessages() {
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Mobile slide: the list and chat sit in a track that's translated in
-  // pixels (Framer Motion). `trackWidth` is one pane's width (the viewport on
-  // mobile); the track shifts by -trackWidth to reveal the chat. `isMobile`
-  // gates the gesture and the slide so desktop keeps both panes side by side.
+  // Mobile slide: the list and chat sit in a track that Framer Motion
+  // translates in pixels. `paneWidth` is one pane's real rendered width; the
+  // track shifts by -paneWidth to reveal the chat. `isMobile` gates the
+  // gesture/slide so desktop keeps both panes side by side.
   const slideX = useMotionValue(0);
-  const [trackWidth, setTrackWidth] = useState(0);
+  const [paneWidth, setPaneWidth] = useState(0);
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 768px)");
     const sync = () => {
       setIsMobile(mql.matches);
-      setTrackWidth(rootRef.current?.clientWidth ?? window.innerWidth);
+      // Measure after layout so we read the real mobile pane width (the sidebar
+      // is the slide distance — measuring the chat pane can race with its
+      // mount). rAF ensures the media-query layout has applied first.
+      requestAnimationFrame(() => {
+        const sidebar = rootRef.current?.querySelector(".messages-sidebar");
+        const w =
+          (sidebar as HTMLElement)?.offsetWidth ||
+          rootRef.current?.clientWidth ||
+          window.innerWidth;
+        setPaneWidth(w);
+      });
     };
     sync();
     mql.addEventListener("change", sync);
@@ -1261,41 +1278,36 @@ export function FakeMessages() {
     };
   }, []);
 
-  // Animate the track to the list (0) or the chat (-trackWidth) whenever the
+  // Animate the track to the list (0) or the chat (-paneWidth) whenever the
   // selection or layout changes. Spring gives a natural settle.
   useEffect(() => {
-    const target = isMobile && currentActiveId ? -trackWidth : 0;
+    const target = isMobile && currentActiveId ? -paneWidth : 0;
     const controls = animate(slideX, target, {
       type: "spring",
       stiffness: 500,
       damping: 40,
     });
     return controls.stop;
-  }, [isMobile, currentActiveId, trackWidth, slideX]);
+  }, [isMobile, currentActiveId, paneWidth, slideX]);
 
   // Edge-swipe back: a drag that begins near the left edge of the chat and
   // moves far/fast enough returns to the list. Framer handles the live drag;
-  // we just decide on release.
+  // we just decide on release based on how far/fast it travelled.
   const handleDragEnd = useCallback(
-    (
-      _e: unknown,
-      info: { offset: { x: number }; velocity: { x: number } },
-    ) => {
-      const committed =
-        info.offset.x > trackWidth / 3 || info.velocity.x > 500;
+    (_e: unknown, info: { offset: { x: number }; velocity: { x: number } }) => {
+      const committed = info.offset.x > paneWidth / 3 || info.velocity.x > 500;
       if (committed) {
         if (modeRef.current === "accounts") setAccountsActiveId(null);
         else setGroupsActiveId(null);
       } else {
-        // Snap back to the chat.
-        animate(slideX, -trackWidth, {
+        animate(slideX, -paneWidth, {
           type: "spring",
           stiffness: 500,
           damping: 40,
         });
       }
     },
-    [trackWidth, slideX],
+    [paneWidth, slideX],
   );
 
   useEffect(() => {
@@ -1341,7 +1353,7 @@ export function FakeMessages() {
         className="messages-track"
         style={isMobile ? { x: slideX } : undefined}
         drag={isMobile && currentActiveId ? "x" : false}
-        dragConstraints={{ left: -trackWidth, right: 0 }}
+        dragConstraints={{ left: -paneWidth, right: 0 }}
         dragElastic={0.05}
         dragDirectionLock
         onDragEnd={handleDragEnd}
@@ -1355,6 +1367,54 @@ export function FakeMessages() {
             {totalUnread > 0 && (
               <span className="total-unread">{totalUnread}</span>
             )}
+            <div className="settings-menu">
+              <button
+                type="button"
+                className="settings-button"
+                onClick={() => setSettingsOpen((v) => !v)}
+                aria-label="Settings"
+                aria-expanded={settingsOpen}
+              >
+                ⚙
+              </button>
+              {settingsOpen && (
+                <>
+                  <div
+                    className="settings-backdrop"
+                    onClick={() => setSettingsOpen(false)}
+                  />
+                  <div className="settings-popover" role="menu">
+                    <button
+                      type="button"
+                      className={`settings-item ${soundEnabled ? "active" : ""}`}
+                      onClick={() => {
+                        const next = !soundEnabled;
+                        setMessageSoundEnabled(next);
+                        setSoundEnabled(next);
+                        // User gesture — preview the chime when enabling so
+                        // autoplay unlocks and they hear it.
+                        if (next) playMessageSound();
+                      }}
+                    >
+                      <span>{soundEnabled ? "🔊" : "🔇"} Message sound</span>
+                      <span className="settings-state">
+                        {soundEnabled ? "On" : "Off"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`settings-item nsfw ${showNsfw ? "active" : ""}`}
+                      onClick={() => setShowNsfw((v) => !v)}
+                    >
+                      <span>NSFW content</span>
+                      <span className="settings-state">
+                        {showNsfw ? "On" : "Off"}
+                      </span>
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
           </div>
           <div className="auth-bar">
             {auth.state.status === "signed-in" ? (
@@ -1538,37 +1598,6 @@ export function FakeMessages() {
         </div>
 
         <div className="messages-main">
-          <div className="header-toggles">
-            <button
-              className={`header-toggle ${soundEnabled ? "active" : ""}`}
-              onClick={() => {
-                const next = !soundEnabled;
-                setMessageSoundEnabled(next);
-                setSoundEnabled(next);
-                // Clicking is a user gesture — preview the chime when enabling so
-                // browser autoplay unlocks and the user hears what it sounds like.
-                if (next) playMessageSound();
-              }}
-              title={
-                soundEnabled
-                  ? "Message sound is on — click to mute"
-                  : "Play a sound on each incoming message"
-              }
-            >
-              {soundEnabled ? "🔊 sound" : "🔇 sound"}
-            </button>
-            <button
-              className={`header-toggle nsfw-toggle ${showNsfw ? "active" : ""}`}
-              onClick={() => setShowNsfw((v) => !v)}
-              title={
-                showNsfw
-                  ? "NSFW content is showing — click to hide"
-                  : "Show self-labeled NSFW content"
-              }
-            >
-              {showNsfw ? "NSFW: on" : "NSFW: off"}
-            </button>
-          </div>
           {activeConversation ? (
             <>
               <div className="chat-header">

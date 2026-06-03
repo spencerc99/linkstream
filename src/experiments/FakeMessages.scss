@@ -4,8 +4,9 @@
   // Use dynamic viewport height where supported so the iOS URL bar
   // collapsing/expanding doesn't clip the chat.
   height: 100dvh;
-  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    "Helvetica Neue", sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
+    sans-serif;
   background: #fff;
   color: #000;
 
@@ -54,6 +55,87 @@
         font-weight: 600;
         min-width: 24px;
         text-align: center;
+      }
+
+      // Gear button + dropdown holding the sound / NSFW settings.
+      .settings-menu {
+        position: relative;
+        flex-shrink: 0;
+
+        .settings-button {
+          background: none;
+          border: none;
+          font-size: 20px;
+          line-height: 1;
+          color: #8e8e93;
+          cursor: pointer;
+          padding: 2px 4px;
+          border-radius: 6px;
+          transition:
+            color 0.15s,
+            background 0.15s;
+
+          &:hover {
+            color: #3c3c43;
+            background: #e8e8ed;
+          }
+        }
+
+        // Full-viewport catcher so an outside tap closes the popover.
+        .settings-backdrop {
+          position: fixed;
+          inset: 0;
+          z-index: 30;
+        }
+
+        .settings-popover {
+          position: absolute;
+          top: calc(100% + 6px);
+          right: 0;
+          z-index: 31;
+          min-width: 200px;
+          background: #fff;
+          border: 0.5px solid #d1d1d6;
+          border-radius: 12px;
+          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.16);
+          padding: 4px;
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+
+          .settings-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 9px 10px;
+            border: none;
+            background: none;
+            border-radius: 8px;
+            font-size: 13px;
+            color: #000;
+            cursor: pointer;
+            text-align: left;
+
+            &:hover {
+              background: #f0f0f3;
+            }
+
+            .settings-state {
+              font-size: 12px;
+              font-weight: 600;
+              color: #8e8e93;
+            }
+
+            &.active .settings-state {
+              color: #007aff;
+            }
+
+            &.nsfw.active .settings-state {
+              color: #ff3b30;
+            }
+          }
+        }
       }
     }
 
@@ -170,8 +252,8 @@
       justify-content: space-between;
       align-items: baseline;
       gap: 12px;
-      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-        monospace;
+      font-family:
+        ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
       box-shadow:
         inset 0 1px 0 rgba(255, 255, 255, 0.08),
         0 1px 2px rgba(0, 0, 0, 0.2);
@@ -558,52 +640,6 @@
     min-width: 0;
     position: relative;
 
-    // Floating toggle cluster (sound, NSFW), pinned top-right, hovering over
-    // the chat header (or the empty corner when no conversation is open).
-    .header-toggles {
-      position: absolute;
-      top: 12px;
-      right: 16px;
-      z-index: 20;
-      display: flex;
-      gap: 6px;
-    }
-
-    .header-toggle {
-      padding: 5px 10px;
-      border-radius: 14px;
-      border: 1px solid #d1d1d6;
-      background: rgba(255, 255, 255, 0.9);
-      backdrop-filter: blur(8px);
-      color: #8e8e93;
-      font-size: 11px;
-      font-weight: 600;
-      cursor: pointer;
-      box-shadow: 0 1px 4px rgba(0, 0, 0, 0.1);
-      transition:
-        background 0.15s,
-        color 0.15s,
-        border-color 0.15s;
-
-      &:hover:not(.active) {
-        color: #3c3c43;
-        border-color: #b0b0b5;
-      }
-
-      // Sound toggle "on" reads as a calm enabled state, not an alarm.
-      &.active {
-        background: #007aff;
-        border-color: #007aff;
-        color: #fff;
-      }
-
-      // NSFW "on" stays red as a content warning.
-      &.nsfw-toggle.active {
-        background: #ff3b30;
-        border-color: #ff3b30;
-      }
-    }
-
     .chat-header {
       display: flex;
       align-items: center;
@@ -977,7 +1013,9 @@
           padding: 2px 4px;
           line-height: 1;
           opacity: 0;
-          transition: opacity 0.15s, color 0.15s;
+          transition:
+            opacity 0.15s,
+            color 0.15s;
           flex-shrink: 0;
           align-self: center;
 
@@ -1033,7 +1071,6 @@
         &.outgoing .message-reaction {
           left: -6px;
         }
-
       }
 
       .tapback-menu {
@@ -1203,6 +1240,10 @@
   // clips the off-screen pane.
   @media (max-width: 768px) {
     overflow: hidden;
+    // Plain block layout on mobile so the oversized track is positioned by
+    // normal flow at left:0. (As a flex container, the root's overflow
+    // alignment nudged the wide track left by ~half a scrollbar width.)
+    display: block;
 
     .messages-track {
       display: flex;
@@ -1235,17 +1276,6 @@
     // Scoped under .messages-main to match the base rule's specificity.
     .messages-main .chat-header .chat-back-button {
       display: block;
-    }
-
-    // The floating sound/NSFW toggles overlap the contact name on a narrow
-    // header. Drop them into the document flow on a row of their own under
-    // the header instead of hovering over it.
-    .messages-main .header-toggles {
-      position: static;
-      justify-content: flex-end;
-      padding: 6px 12px;
-      background: #fafafa;
-      border-bottom: 0.5px solid #d1d1d6;
     }
   }
 }
