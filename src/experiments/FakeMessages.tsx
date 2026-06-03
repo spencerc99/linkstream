@@ -1262,6 +1262,52 @@ export function FakeMessages() {
     return () => mql.removeEventListener("change", sync);
   }, []);
 
+  // Keyboard-aware sizing. The whole view is pinned to the visual viewport so
+  // (a) the page itself never scrolls — you can't drag past the composer — and
+  // (b) when the on-screen keyboard shrinks the visual viewport, the view
+  // shrinks with it, keeping the header at top and the composer just above the
+  // keyboard. We mirror visualViewport.height/offsetLeft/offsetTop onto CSS
+  // vars and pin <html>/<body> scroll while mounted (restored on unmount).
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const root = rootRef.current;
+    if (!vv || !root) return;
+
+    const html = document.documentElement;
+    const body = document.body;
+    const prev = {
+      htmlOverflow: html.style.overflow,
+      bodyOverflow: body.style.overflow,
+      bodyPosition: body.style.position,
+      bodyWidth: body.style.width,
+    };
+    html.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+
+    const apply = () => {
+      // Read fresh every time — never cache — so dismissing the keyboard
+      // restores full height. offsetTop/Left handle iOS scrolling the layout
+      // viewport under the keyboard.
+      root.style.setProperty("--vvh", `${vv.height}px`);
+      root.style.setProperty("--vvt", `${vv.offsetTop}px`);
+      root.style.setProperty("--vvl", `${vv.offsetLeft}px`);
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      html.style.overflow = prev.htmlOverflow;
+      body.style.overflow = prev.bodyOverflow;
+      body.style.position = prev.bodyPosition;
+      body.style.width = prev.bodyWidth;
+      root.style.removeProperty("--vvh");
+      root.style.removeProperty("--vvt");
+      root.style.removeProperty("--vvl");
+    };
+  }, []);
+
   // Animate the track to the list (0%) or the chat (-50%) whenever the
   // selection or layout changes. Spring gives a natural settle.
   useEffect(() => {

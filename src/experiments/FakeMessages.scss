@@ -1,9 +1,16 @@
 .fake-messages {
   display: flex;
+  // Pin to the visual viewport so the page never scrolls and the keyboard
+  // shrinks the view (header stays put, composer rides above the keyboard).
+  // --vv* are set from the VisualViewport API; falls back to the dynamic
+  // viewport (and 100vh) when unavailable, e.g. on desktop.
+  position: fixed;
+  top: var(--vvt, 0);
+  left: var(--vvl, 0);
+  width: 100%;
   height: 100vh;
-  // Use dynamic viewport height where supported so the iOS URL bar
-  // collapsing/expanding doesn't clip the chat.
   height: 100dvh;
+  height: var(--vvh, 100dvh);
   font-family:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue",
     sans-serif;
