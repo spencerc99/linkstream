@@ -1245,69 +1245,55 @@ export function FakeMessages() {
   const inputRef = useRef<HTMLInputElement>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Mobile slide: the list and chat sit in a track that Framer Motion
-  // translates in pixels. `paneWidth` is one pane's real rendered width; the
-  // track shifts by -paneWidth to reveal the chat. `isMobile` gates the
-  // gesture/slide so desktop keeps both panes side by side.
-  const slideX = useMotionValue(0);
-  const [paneWidth, setPaneWidth] = useState(0);
+  // Mobile slide: the list and chat sit in a 200%-wide track. Framer Motion
+  // animates the track's x to a *percentage* of its own width — "0%" shows the
+  // list, "-50%" shows the chat. A percentage is always exactly one pane, so
+  // the slide can't overshoot from a mis-measured pixel width (and a keyboard
+  // resize can't perturb it). `isMobile` gates the gesture/slide so desktop
+  // keeps both panes side by side.
+  const slideX = useMotionValue<string | number>("0%");
   const [isMobile, setIsMobile] = useState(false);
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 768px)");
-    const sync = () => {
-      setIsMobile(mql.matches);
-      // Measure after layout so we read the real mobile pane width (the sidebar
-      // is the slide distance — measuring the chat pane can race with its
-      // mount). rAF ensures the media-query layout has applied first.
-      requestAnimationFrame(() => {
-        const sidebar = rootRef.current?.querySelector(".messages-sidebar");
-        const w =
-          (sidebar as HTMLElement)?.offsetWidth ||
-          rootRef.current?.clientWidth ||
-          window.innerWidth;
-        setPaneWidth(w);
-      });
-    };
+    const sync = () => setIsMobile(mql.matches);
     sync();
     mql.addEventListener("change", sync);
-    window.addEventListener("resize", sync);
-    return () => {
-      mql.removeEventListener("change", sync);
-      window.removeEventListener("resize", sync);
-    };
+    return () => mql.removeEventListener("change", sync);
   }, []);
 
-  // Animate the track to the list (0) or the chat (-paneWidth) whenever the
+  // Animate the track to the list (0%) or the chat (-50%) whenever the
   // selection or layout changes. Spring gives a natural settle.
   useEffect(() => {
-    const target = isMobile && currentActiveId ? -paneWidth : 0;
+    const target = isMobile && currentActiveId ? "-50%" : "0%";
     const controls = animate(slideX, target, {
       type: "spring",
       stiffness: 500,
       damping: 40,
     });
     return controls.stop;
-  }, [isMobile, currentActiveId, paneWidth, slideX]);
+  }, [isMobile, currentActiveId, slideX]);
 
   // Edge-swipe back: a drag that begins near the left edge of the chat and
-  // moves far/fast enough returns to the list. Framer handles the live drag;
-  // we just decide on release based on how far/fast it travelled.
+  // moves far/fast enough returns to the list. Framer handles the live drag
+  // (writing px to slideX); on release we decide and snap back to a clean
+  // percentage so the resting position is always exact.
   const handleDragEnd = useCallback(
     (_e: unknown, info: { offset: { x: number }; velocity: { x: number } }) => {
+      const paneWidth = rootRef.current?.clientWidth ?? window.innerWidth;
       const committed = info.offset.x > paneWidth / 3 || info.velocity.x > 500;
       if (committed) {
         if (modeRef.current === "accounts") setAccountsActiveId(null);
         else setGroupsActiveId(null);
       } else {
-        animate(slideX, -paneWidth, {
+        animate(slideX, "-50%", {
           type: "spring",
           stiffness: 500,
           damping: 40,
         });
       }
     },
-    [paneWidth, slideX],
+    [slideX],
   );
 
   useEffect(() => {
@@ -1353,8 +1339,7 @@ export function FakeMessages() {
         className="messages-track"
         style={isMobile ? { x: slideX } : undefined}
         drag={isMobile && currentActiveId ? "x" : false}
-        dragConstraints={{ left: -paneWidth, right: 0 }}
-        dragElastic={0.05}
+        dragElastic={0.1}
         dragDirectionLock
         onDragEnd={handleDragEnd}
       >
@@ -1364,9 +1349,6 @@ export function FakeMessages() {
               &lsaquo;
             </Link>
             <h1>@Messages</h1>
-            {totalUnread > 0 && (
-              <span className="total-unread">{totalUnread}</span>
-            )}
             <div className="settings-menu">
               <button
                 type="button"
@@ -1415,6 +1397,9 @@ export function FakeMessages() {
                 </>
               )}
             </div>
+            {totalUnread > 0 && (
+              <span className="total-unread">{totalUnread}</span>
+            )}
           </div>
           <div className="auth-bar">
             {auth.state.status === "signed-in" ? (
