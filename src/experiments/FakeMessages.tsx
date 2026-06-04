@@ -1,11 +1,18 @@
 import { useState, useCallback, useRef, useEffect } from "react";
+import { motion, useMotionValue, animate } from "framer-motion";
 import { useJetStream } from "../hooks/useJetStream";
 import { Link } from "react-router-dom";
 import dayjs from "dayjs";
 import { profileResolver } from "./profileResolver";
+import { quotedPostResolver } from "./quotedPostResolver";
 import { useBskyAuth } from "./useBskyAuth";
 import { postReply, type ReplyTarget } from "./bskyAuth";
 import { useDocumentTitle } from "./useDocumentTitle";
+import {
+  playMessageSound,
+  isMessageSoundEnabled,
+  setMessageSoundEnabled,
+} from "./messageSound";
 import "./FakeMessages.scss";
 
 type MessagesMode = "accounts" | "groups";
@@ -71,6 +78,13 @@ type MessageEmbed =
       title?: string;
       description?: string;
       thumb?: string;
+    }
+  | {
+      // A quoted post. Only `uri` is known at firehose time; the quoted
+      // author/text/media are filled in by quotedPostResolver at render time.
+      kind: "quote";
+      uri: string;
+      media?: MessageEmbed;
     };
 
 interface Message {
@@ -172,10 +186,32 @@ function imageCdnUrl(
   return `https://cdn.bsky.app/img/feed_${size}/plain/${did}/${cid}@jpeg`;
 }
 
-// Pull a renderable image or link-card embed out of a post record, if any.
+// Pull a renderable embed (image, link-card, or quoted post) out of a post
+// record, if any. For quote-with-media, the quoted post's media is nested.
 function extractEmbed(record: any, did: string): MessageEmbed | undefined {
-  // recordWithMedia nests the media embed under .media
-  const embed = record?.embed?.media ?? record?.embed;
+  const outer = record?.embed;
+  const outerType = outer?.$type as string | undefined;
+  if (!outerType) return undefined;
+
+  // A quote post: app.bsky.embed.record carries the quoted post's strongRef.
+  if (outerType === "app.bsky.embed.record") {
+    const uri = outer.record?.uri as string | undefined;
+    return uri ? { kind: "quote", uri } : undefined;
+  }
+
+  // Quote-with-media: quote ref under .record.record, media under .media.
+  if (outerType === "app.bsky.embed.recordWithMedia") {
+    const uri = outer.record?.record?.uri as string | undefined;
+    if (!uri) return undefined;
+    const media = extractMediaEmbed(outer.media, did);
+    return { kind: "quote", uri, media };
+  }
+
+  return extractMediaEmbed(outer, did);
+}
+
+// Pull an image or external link-card embed out of a media embed object.
+function extractMediaEmbed(embed: any, did: string): MessageEmbed | undefined {
   const type = embed?.$type as string | undefined;
   if (!type) return undefined;
 
@@ -254,6 +290,49 @@ function postUri(did: string, rkey: string): string {
 
 // Renders an image or link-card embed inside a message bubble.
 function MessageEmbedView({ embed }: { embed: MessageEmbed }) {
+  if (embed.kind === "quote") {
+    const quoted = quotedPostResolver.get(embed.uri);
+    const appUrl = bskyAppUrlFromUri(embed.uri);
+    return (
+      <>
+        {/* The media belongs to the quoting post, so it sits above the quoted
+            card rather than inside it. */}
+        {embed.media && <MessageEmbedView embed={embed.media} />}
+        <a
+          className="embed-quote"
+          href={appUrl}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {quoted ? (
+            <>
+              <div className="quote-author">
+                {quoted.authorAvatar && (
+                  <img
+                    className="quote-avatar"
+                    src={quoted.authorAvatar}
+                    alt=""
+                    loading="lazy"
+                  />
+                )}
+                <div className="quote-author-names">
+                  <span className="quote-name">
+                    {quoted.authorName || quoted.authorHandle}
+                  </span>
+                  <span className="quote-handle">@{quoted.authorHandle}</span>
+                </div>
+              </div>
+              {quoted.text && <span className="quote-text">{quoted.text}</span>}
+            </>
+          ) : (
+            <span className="quote-pending">quoted post</span>
+          )}
+        </a>
+      </>
+    );
+  }
+
   if (embed.kind === "images") {
     return (
       <div className={`embed-images count-${Math.min(embed.images.length, 4)}`}>
@@ -389,6 +468,11 @@ export function FakeMessages() {
   // Whether to allow self-labeled NSFW posts through the firehose intake.
   const [showNsfw, setShowNsfw] = useState(loadStoredShowNsfw);
   const showNsfwRef = useRef(showNsfw);
+  // Whether incoming texts play the iMessage chime. The sound module owns the
+  // setting (so playback can self-gate); this mirrors it for the toggle UI.
+  const [soundEnabled, setSoundEnabled] = useState(isMessageSoundEnabled);
+  // Settings popover (sound + NSFW) anchored in the conversation-list header.
+  const [settingsOpen, setSettingsOpen] = useState(false);
   // Session score: every reply sent (fake or real Bluesky post).
   const [replyTimestamps, setReplyTimestamps] = useState<number[]>([]);
   const [_rateTick, setRateTick] = useState(0);
@@ -399,6 +483,7 @@ export function FakeMessages() {
     const id = setInterval(() => setRateTick((t) => t + 1), 5000);
     return () => clearInterval(id);
   }, []);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const pendingQueue = useRef<PendingDelivery[]>([]);
@@ -456,9 +541,18 @@ export function FakeMessages() {
     };
   }, [accountsActiveId, groupsActiveId]);
 
-  // Re-render when profiles resolve
+  // Re-render when profiles or quoted posts resolve
   useEffect(() => {
-    return profileResolver.subscribe(() => setProfileTick((t) => t + 1));
+    const unsubProfile = profileResolver.subscribe(() =>
+      setProfileTick((t) => t + 1),
+    );
+    const unsubQuote = quotedPostResolver.subscribe(() =>
+      setProfileTick((t) => t + 1),
+    );
+    return () => {
+      unsubProfile();
+      unsubQuote();
+    };
   }, []);
 
   // Auto-scroll on message change / mode switch
@@ -473,9 +567,15 @@ export function FakeMessages() {
   useEffect(() => {
     let timeout: ReturnType<typeof setTimeout>;
     const tick = () => {
-      if (pendingQueue.current.length > 0) {
-        const msg = pendingQueue.current.shift()!;
-        deliverMessage(msg);
+      // A throw in delivery must not kill the ticker — that would strand every
+      // convo on "typing" forever. Swallow it and keep draining.
+      try {
+        if (pendingQueue.current.length > 0) {
+          const msg = pendingQueue.current.shift()!;
+          deliverMessage(msg);
+        }
+      } catch (err) {
+        console.error("delivery failed", err);
       }
       const backlog = pendingQueue.current.length;
       const delay =
@@ -534,6 +634,10 @@ export function FakeMessages() {
       next.set(p.conversationId, updated);
       return next;
     });
+
+    // Chime like iMessage on receive. After the state update so audio can
+    // never block delivery (a throw here would strand the convo on "typing").
+    playMessageSound();
   }
 
   // ---- Mode-specific firehose handling ---------------------------------
@@ -779,45 +883,56 @@ export function FakeMessages() {
   // route it back into that conversation as an incoming message and start
   // tracking it, so an ongoing back-and-forth keeps landing. Returns true when
   // handled (so the normal intake path can skip it).
-  const routeReplyToMe = useCallback((data: any): boolean => {
-    const parentUri = data.commit?.record?.reply?.parent?.uri;
-    if (typeof parentUri !== "string") return false;
-    const target = myReplyUris.current.get(parentUri);
-    if (!target) return false;
+  const routeReplyToMe = useCallback(
+    (data: any): boolean => {
+      const parentUri = data.commit?.record?.reply?.parent?.uri;
+      if (typeof parentUri !== "string") return false;
+      const target = myReplyUris.current.get(parentUri);
+      if (!target) return false;
 
-    const post = usableAnyPost(data);
-    if (!post) return false;
-    // Respect the NSFW toggle here too — an unsolicited reply could carry a
-    // label the user has chosen not to see. Return true so the post is still
-    // consumed (not re-routed through the normal intake path).
-    if (post.isNsfw && !showNsfwRef.current) return true;
+      const post = usableAnyPost(data);
+      if (!post) return false;
+      // Respect the NSFW toggle here too — an unsolicited reply could carry a
+      // label the user has chosen not to see. Return true so the post is still
+      // consumed (not re-routed through the normal intake path).
+      if (post.isNsfw && !showNsfwRef.current) return true;
 
-    profileResolver.get(post.did);
-    pendingQueue.current.unshift({
-      mode: target.mode,
-      conversationId: target.conversationId,
-      text: post.text,
-      timestamp: Date.now(),
-      did: post.did,
-      rkey: post.rkey,
-      cid: post.cid,
-      embed: post.embed,
-      authorDid: post.did,
-    });
-    // Track this new reply too, so the thread can continue.
-    trackReplyUri(postUri(post.did, post.rkey), target);
-    // Surface a typing indicator on that conversation immediately.
-    const setter =
-      target.mode === "accounts" ? setAccountsConvos : setGroupsConvos;
-    setter((prev) => {
-      const conv = prev.get(target.conversationId);
-      if (!conv) return prev;
-      const next = new Map(prev);
-      next.set(target.conversationId, { ...conv, isTyping: true });
-      return next;
-    });
-    return true;
-  }, [trackReplyUri]);
+      // In Accounts mode each conversation is a single account. A reply to your
+      // post from someone other than that account reads as a non-sequitur, so we
+      // consume it (return true) without routing it into the chat. Groups mode is
+      // intentionally multi-person, so it keeps every replier.
+      if (target.mode === "accounts" && post.did !== target.conversationId) {
+        return true;
+      }
+
+      profileResolver.get(post.did);
+      pendingQueue.current.unshift({
+        mode: target.mode,
+        conversationId: target.conversationId,
+        text: post.text,
+        timestamp: Date.now(),
+        did: post.did,
+        rkey: post.rkey,
+        cid: post.cid,
+        embed: post.embed,
+        authorDid: post.did,
+      });
+      // Track this new reply too, so the thread can continue.
+      trackReplyUri(postUri(post.did, post.rkey), target);
+      // Surface a typing indicator on that conversation immediately.
+      const setter =
+        target.mode === "accounts" ? setAccountsConvos : setGroupsConvos;
+      setter((prev) => {
+        const conv = prev.get(target.conversationId);
+        if (!conv) return prev;
+        const next = new Map(prev);
+        next.set(target.conversationId, { ...conv, isTyping: true });
+        return next;
+      });
+      return true;
+    },
+    [trackReplyUri],
+  );
 
   const handleFirehose = useCallback(
     (data: any) => {
@@ -1069,9 +1184,12 @@ export function FakeMessages() {
   const handleSelectConversation = (id: string) => {
     setCurrentActiveId(id);
     setShowTapback(null);
-    // Focus the composer so you can immediately type after navigating
-    // (whether by click or arrow keys).
-    requestAnimationFrame(() => inputRef.current?.focus());
+    // Focus the composer so you can immediately type after navigating (desktop
+    // keyboard flow). On mobile we skip it: auto-popping the on-screen keyboard
+    // mid-slide causes a layout shift, and you usually want to read first.
+    if (!isMobile) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
     setCurrentConvos((prev) => {
       const next = new Map(prev);
       const conv = next.get(id);
@@ -1124,10 +1242,108 @@ export function FakeMessages() {
   const totalUnread = sortedConvos.reduce((s, c) => s + c.unreadCount, 0);
 
   const placeholder =
-    mode === "accounts" ? "reply to this account..." : "send to the group...";
+    mode === "accounts" ? "reply to this DM..." : "send to the group...";
 
   // Keyboard navigation: ↑/↓ to move between conversations, Esc to focus input
   const inputRef = useRef<HTMLInputElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Mobile slide: the list and chat sit in a 200%-wide track. Framer Motion
+  // animates the track's x to a *percentage* of its own width — "0%" shows the
+  // list, "-50%" shows the chat. A percentage is always exactly one pane, so
+  // the slide can't overshoot from a mis-measured pixel width (and a keyboard
+  // resize can't perturb it). `isMobile` gates the gesture/slide so desktop
+  // keeps both panes side by side.
+  const slideX = useMotionValue<string | number>("0%");
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 768px)");
+    const sync = () => setIsMobile(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+
+  // Keyboard-aware sizing. The whole view is pinned to the visual viewport so
+  // (a) the page itself never scrolls — you can't drag past the composer — and
+  // (b) when the on-screen keyboard shrinks the visual viewport, the view
+  // shrinks with it, keeping the header at top and the composer just above the
+  // keyboard. We mirror visualViewport.height/offsetLeft/offsetTop onto CSS
+  // vars and pin <html>/<body> scroll while mounted (restored on unmount).
+  useEffect(() => {
+    const vv = window.visualViewport;
+    const root = rootRef.current;
+    if (!vv || !root) return;
+
+    const html = document.documentElement;
+    const body = document.body;
+    const prev = {
+      htmlOverflow: html.style.overflow,
+      bodyOverflow: body.style.overflow,
+      bodyPosition: body.style.position,
+      bodyWidth: body.style.width,
+    };
+    html.style.overflow = "hidden";
+    body.style.overflow = "hidden";
+
+    const apply = () => {
+      // Read fresh every time — never cache — so dismissing the keyboard
+      // restores full height. offsetTop/Left handle iOS scrolling the layout
+      // viewport under the keyboard.
+      root.style.setProperty("--vvh", `${vv.height}px`);
+      root.style.setProperty("--vvt", `${vv.offsetTop}px`);
+      root.style.setProperty("--vvl", `${vv.offsetLeft}px`);
+    };
+    apply();
+    vv.addEventListener("resize", apply);
+    vv.addEventListener("scroll", apply);
+    return () => {
+      vv.removeEventListener("resize", apply);
+      vv.removeEventListener("scroll", apply);
+      html.style.overflow = prev.htmlOverflow;
+      body.style.overflow = prev.bodyOverflow;
+      body.style.position = prev.bodyPosition;
+      body.style.width = prev.bodyWidth;
+      root.style.removeProperty("--vvh");
+      root.style.removeProperty("--vvt");
+      root.style.removeProperty("--vvl");
+    };
+  }, []);
+
+  // Animate the track to the list (0%) or the chat (-50%) whenever the
+  // selection or layout changes. Spring gives a natural settle.
+  useEffect(() => {
+    const target = isMobile && currentActiveId ? "-50%" : "0%";
+    const controls = animate(slideX, target, {
+      type: "spring",
+      stiffness: 500,
+      damping: 40,
+    });
+    return controls.stop;
+  }, [isMobile, currentActiveId, slideX]);
+
+  // Edge-swipe back: a drag that begins near the left edge of the chat and
+  // moves far/fast enough returns to the list. Framer handles the live drag
+  // (writing px to slideX); on release we decide and snap back to a clean
+  // percentage so the resting position is always exact.
+  const handleDragEnd = useCallback(
+    (_e: unknown, info: { offset: { x: number }; velocity: { x: number } }) => {
+      const paneWidth = rootRef.current?.clientWidth ?? window.innerWidth;
+      const committed = info.offset.x > paneWidth / 3 || info.velocity.x > 500;
+      if (committed) {
+        if (modeRef.current === "accounts") setAccountsActiveId(null);
+        else setGroupsActiveId(null);
+      } else {
+        animate(slideX, "-50%", {
+          type: "spring",
+          stiffness: 500,
+          damping: 40,
+        });
+      }
+    },
+    [slideX],
+  );
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -1164,420 +1380,485 @@ export function FakeMessages() {
   }, [sortedConvos, currentActiveId, handleSelectConversation, inputText]);
 
   return (
-    <div className="fake-messages">
-      <div className="messages-sidebar">
-        <div className="sidebar-header">
-          <Link to="/" className="back-button">
-            &lsaquo;
-          </Link>
-          <h1>@Messages</h1>
-          {totalUnread > 0 && (
-            <span className="total-unread">{totalUnread}</span>
-          )}
-        </div>
-        <div className="auth-bar">
-          {auth.state.status === "signed-in" ? (
-            <>
-              <span className="auth-dot" aria-hidden />
-              <span className="auth-handle">
-                @{auth.state.handle || "signed in"}
-              </span>
-              <button
-                className="auth-action"
-                onClick={() => auth.signOut()}
-                type="button"
-              >
-                sign out
-              </button>
-            </>
-          ) : signInOpen ? (
-            <form
-              className="auth-signin-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleSignIn(signInHandle);
-              }}
-            >
-              <input
-                type="text"
-                value={signInHandle}
-                onChange={(e) => setSignInHandle(e.target.value)}
-                placeholder="yourhandle.bsky.social"
-                autoFocus
-              />
-              <button type="submit">→</button>
+    <div
+      ref={rootRef}
+      className={`fake-messages ${currentActiveId ? "viewing-chat" : ""}`}
+    >
+      <motion.div
+        className="messages-track"
+        style={isMobile ? { x: slideX } : undefined}
+        drag={isMobile && currentActiveId ? "x" : false}
+        dragElastic={0.1}
+        dragDirectionLock
+        onDragEnd={handleDragEnd}
+      >
+        <div className="messages-sidebar">
+          <div className="sidebar-header">
+            <Link to="/" className="back-button">
+              &lsaquo;
+            </Link>
+            <h1>@Messages</h1>
+            <div className="settings-menu">
               <button
                 type="button"
-                onClick={() => setSignInOpen(false)}
-                className="auth-cancel"
+                className="settings-button"
+                onClick={() => setSettingsOpen((v) => !v)}
+                aria-label="Settings"
+                aria-expanded={settingsOpen}
               >
-                cancel
+                ⚙
               </button>
-            </form>
-          ) : (
-            <button
-              type="button"
-              className="auth-action primary"
-              onClick={() => setSignInOpen(true)}
-              disabled={auth.state.status === "loading"}
-            >
-              {auth.state.status === "loading"
-                ? "loading…"
-                : "sign in to reply on bluesky"}
-            </button>
-          )}
-        </div>
-        {replyTimestamps.length > 0 &&
-          (() => {
-            const now = Date.now();
-            const last60 = replyTimestamps.filter(
-              (t) => now - t < 60_000,
-            ).length;
-            const firstAt = replyTimestamps[0];
-            const elapsedMin = Math.max((now - firstAt) / 60_000, 1 / 60);
-            const avg = replyTimestamps.length / elapsedMin;
-            return (
-              <div className="score-bar" aria-live="polite">
-                <div className="score-main">
-                  <span className="score-value">{replyTimestamps.length}</span>
-                  <span className="score-label">
-                    {replyTimestamps.length === 1
-                      ? "reply sent"
-                      : "replies sent"}
-                  </span>
-                </div>
-                <div className="score-rate">
-                  <span className="rate-now">{last60}/min now</span>
-                  <span className="rate-divider">·</span>
-                  <span className="rate-avg">avg {avg.toFixed(1)}/min</span>
-                </div>
-              </div>
-            );
-          })()}
-        <div className="mode-switcher" role="tablist">
-          <button
-            role="tab"
-            aria-selected={mode === "accounts"}
-            className={`mode-tab ${mode === "accounts" ? "active" : ""}`}
-            onClick={() => handleModeChange("accounts")}
-            title="Every Bluesky account becomes its own contact"
-          >
-            Accounts
-          </button>
-          <button
-            role="tab"
-            aria-selected={mode === "groups"}
-            className={`mode-tab ${mode === "groups" ? "active" : ""}`}
-            onClick={() => handleModeChange("groups")}
-            title="Real Bluesky threads rendered as group chats"
-          >
-            Groups
-          </button>
-        </div>
-
-        {(repliedCount > 0 || showRepliedOnly) && (
-          <div className="sidebar-filters">
-            <button
-              className={`filter-pill ${showRepliedOnly ? "active" : ""}`}
-              onClick={() => setShowRepliedOnly((v) => !v)}
-              title="Show only conversations you've replied to"
-            >
-              {showRepliedOnly ? "← show all" : `★ replied (${repliedCount})`}
-            </button>
-          </div>
-        )}
-
-        <div className="conversation-list">
-          {sortedConvos.length === 0 && (
-            <div className="empty-list">
-              {mode === "accounts"
-                ? "Waiting for accounts to post..."
-                : "Waiting for conversations to form..."}
-            </div>
-          )}
-          {sortedConvos.map((conv) => (
-            <div
-              key={conv.id}
-              className={`conversation-item ${conv.id === currentActiveId ? "active" : ""} ${conv.userReplied ? "replied" : ""}`}
-              onClick={() => handleSelectConversation(conv.id)}
-            >
-              <ConversationAvatar conv={conv} />
-              <div className="conversation-preview">
-                <div className="conversation-top">
-                  <span className="contact-name">
-                    {conv.userReplied && (
-                      <span className="replied-star" title="You replied">
-                        ★{" "}
-                      </span>
-                    )}
-                    {conv.displayName}
-                  </span>
-                  {conv.messages.length > 0 && (
-                    <span className="message-time">
-                      {dayjs(
-                        conv.messages[conv.messages.length - 1].timestamp,
-                      ).format("h:mm A")}
-                    </span>
-                  )}
-                </div>
-                {conv.subtitle && (
-                  <div className="conversation-subtitle">{conv.subtitle}</div>
-                )}
-                <div className="conversation-bottom">
-                  <span className="last-message">
-                    {conv.isTyping ? (
-                      <em className="typing-preview">typing...</em>
-                    ) : conv.messages.length > 0 ? (
-                      renderPreview(conv)
-                    ) : null}
-                  </span>
-                  {conv.unreadCount > 0 && (
-                    <span className="unread-badge">{conv.unreadCount}</span>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
-        </div>
-
-        <div className="keyboard-hints">
-          <span>
-            <kbd>↑</kbd>
-            <kbd>↓</kbd> navigate
-          </span>
-          <span>
-            <kbd>↵</kbd> send
-          </span>
-          <span>
-            <kbd>esc</kbd> unfocus
-          </span>
-        </div>
-      </div>
-
-      <div className="messages-main">
-        <button
-          className={`nsfw-toggle ${showNsfw ? "active" : ""}`}
-          onClick={() => setShowNsfw((v) => !v)}
-          title={
-            showNsfw
-              ? "NSFW content is showing — click to hide"
-              : "Show self-labeled NSFW content"
-          }
-        >
-          {showNsfw ? "NSFW: on" : "NSFW: off"}
-        </button>
-        {activeConversation ? (
-          <>
-            <div className="chat-header">
-              {(() => {
-                const profileUrl = conversationBskyUrl(activeConversation);
-                const inner = (
-                  <>
-                    <ConversationAvatar conv={activeConversation} small />
-                    <div className="chat-header-text">
-                      <span className="chat-contact-name">
-                        {activeConversation.displayName}
-                      </span>
-                      {activeConversation.subtitle && (
-                        <span className="chat-subtitle">
-                          {activeConversation.subtitle}
-                        </span>
-                      )}
-                    </div>
-                  </>
-                );
-                return profileUrl ? (
-                  <a
-                    className="chat-header-link"
-                    href={profileUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    title={
-                      activeConversation.kind === "accounts"
-                        ? "Open profile on Bluesky"
-                        : "Open thread on Bluesky"
-                    }
-                  >
-                    {inner}
-                  </a>
-                ) : (
-                  inner
-                );
-              })()}
-            </div>
-
-            <div className="messages-body" onClick={() => setShowTapback(null)}>
-              <div className="messages-date-header">Today</div>
-              {activeConversation.messages.map((msg, i) => {
-                const prev = activeConversation.messages[i - 1];
-                const showTs = !prev || msg.timestamp - prev.timestamp > 300000;
-                // Show author name above bubble when:
-                // - Groups mode: always for incoming from different authors
-                // - Accounts mode: when the message is from someone OTHER than
-                //   the account this conversation belongs to (thread context)
-                const isThirdParty =
-                  activeConversation.kind === "accounts" &&
-                  msg.authorDid &&
-                  msg.authorDid !== activeConversation.id;
-                const showAuthorLabel =
-                  msg.fromContact &&
-                  msg.authorName &&
-                  (activeConversation.kind === "groups" || isThirdParty) &&
-                  (!prev ||
-                    prev.authorDid !== msg.authorDid ||
-                    !prev.fromContact);
-                return (
-                  <div key={msg.id}>
-                    {showTs && i > 0 && (
-                      <div className="message-timestamp">
-                        {dayjs(msg.timestamp).format("h:mm A")}
-                      </div>
-                    )}
-                    {showAuthorLabel && (
-                      <div
-                        className="author-label"
-                        style={{ color: msg.authorColor }}
-                      >
-                        {msg.authorName}
-                      </div>
-                    )}
-                    <div
-                      className={`message-row ${msg.fromContact ? "incoming" : "outgoing"}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setShowTapback(showTapback === msg.id ? null : msg.id);
+              {settingsOpen && (
+                <>
+                  <div
+                    className="settings-backdrop"
+                    onClick={() => setSettingsOpen(false)}
+                  />
+                  <div className="settings-popover" role="menu">
+                    <button
+                      type="button"
+                      className={`settings-item ${soundEnabled ? "active" : ""}`}
+                      onClick={() => {
+                        const next = !soundEnabled;
+                        setMessageSoundEnabled(next);
+                        setSoundEnabled(next);
+                        // User gesture — preview the chime when enabling so
+                        // autoplay unlocks and they hear it.
+                        if (next) playMessageSound();
                       }}
                     >
-                      {(msg.text || !msg.embed) && (
-                        <div
-                          className={`message-bubble ${msg.fromContact ? "incoming" : "outgoing"}`}
-                        >
-                          <span className="message-text">{msg.text}</span>
-                          {!msg.embed && msg.reaction && (
-                            <span className="message-reaction">
-                              {msg.reaction}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {msg.embed && (
-                        <div className="message-embed">
-                          <MessageEmbedView embed={msg.embed} />
-                          {msg.reaction && (
-                            <span className="message-reaction">
-                              {msg.reaction}
-                            </span>
-                          )}
-                        </div>
-                      )}
-                      {msg.fromContact && msg.sourceDid && msg.sourceRkey && (
-                        <a
-                          className="source-link"
-                          href={`https://bsky.app/profile/${msg.sourceDid}/post/${msg.sourceRkey}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          title="View original post on Bluesky"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          ↗
-                        </a>
-                      )}
-                      {showTapback === msg.id && (
-                        <div className="tapback-menu">
-                          {TAPBACK_REACTIONS.map((r) => (
-                            <button
-                              key={r}
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleTapback(msg.id, r);
-                              }}
-                            >
-                              {r}
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
+                      <span>{soundEnabled ? "🔊" : "🔇"} Message sound</span>
+                      <span className="settings-state">
+                        {soundEnabled ? "On" : "Off"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`settings-item nsfw ${showNsfw ? "active" : ""}`}
+                      onClick={() => setShowNsfw((v) => !v)}
+                    >
+                      <span>NSFW content</span>
+                      <span className="settings-state">
+                        {showNsfw ? "On" : "Off"}
+                      </span>
+                    </button>
                   </div>
-                );
-              })}
-              {activeConversation.isTyping && (
-                <div className="message-row incoming">
-                  <div className="typing-indicator">
-                    <span />
-                    <span />
-                    <span />
+                </>
+              )}
+            </div>
+            {totalUnread > 0 && (
+              <span className="total-unread">{totalUnread}</span>
+            )}
+          </div>
+          <div className="auth-bar">
+            {auth.state.status === "signed-in" ? (
+              <>
+                <span className="auth-dot" aria-hidden />
+                <span className="auth-handle">
+                  @{auth.state.handle || "signed in"}
+                </span>
+                <button
+                  className="auth-action"
+                  onClick={() => auth.signOut()}
+                  type="button"
+                >
+                  sign out
+                </button>
+              </>
+            ) : signInOpen ? (
+              <form
+                className="auth-signin-form"
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  handleSignIn(signInHandle);
+                }}
+              >
+                <input
+                  type="text"
+                  value={signInHandle}
+                  onChange={(e) => setSignInHandle(e.target.value)}
+                  placeholder="yourhandle.bsky.social"
+                  autoFocus
+                />
+                <button type="submit">→</button>
+                <button
+                  type="button"
+                  onClick={() => setSignInOpen(false)}
+                  className="auth-cancel"
+                >
+                  cancel
+                </button>
+              </form>
+            ) : (
+              <button
+                type="button"
+                className="auth-action primary"
+                onClick={() => setSignInOpen(true)}
+                disabled={auth.state.status === "loading"}
+              >
+                {auth.state.status === "loading"
+                  ? "loading…"
+                  : "sign in to reply on bluesky"}
+              </button>
+            )}
+          </div>
+          {replyTimestamps.length > 0 &&
+            (() => {
+              const now = Date.now();
+              const last60 = replyTimestamps.filter(
+                (t) => now - t < 60_000,
+              ).length;
+              const firstAt = replyTimestamps[0];
+              const elapsedMin = Math.max((now - firstAt) / 60_000, 1 / 60);
+              const avg = replyTimestamps.length / elapsedMin;
+              return (
+                <div className="score-bar" aria-live="polite">
+                  <div className="score-main">
+                    <span className="score-value">
+                      {replyTimestamps.length}
+                    </span>
+                    <span className="score-label">
+                      {replyTimestamps.length === 1
+                        ? "reply sent"
+                        : "replies sent"}
+                    </span>
+                  </div>
+                  <div className="score-rate">
+                    <span className="rate-now">{last60}/min now</span>
+                    <span className="rate-divider">·</span>
+                    <span className="rate-avg">avg {avg.toFixed(1)}/min</span>
                   </div>
                 </div>
-              )}
-              <div ref={messagesEndRef} />
-            </div>
+              );
+            })()}
+          <div className="mode-switcher" role="tablist">
+            <button
+              role="tab"
+              aria-selected={mode === "accounts"}
+              className={`mode-tab ${mode === "accounts" ? "active" : ""}`}
+              onClick={() => handleModeChange("accounts")}
+              title="Every Bluesky account becomes its own contact"
+            >
+              DMs
+            </button>
+            <button
+              role="tab"
+              aria-selected={mode === "groups"}
+              className={`mode-tab ${mode === "groups" ? "active" : ""}`}
+              onClick={() => handleModeChange("groups")}
+              title="Real Bluesky threads rendered as group chats"
+            >
+              Groups
+            </button>
+          </div>
 
-            {canPostToBluesky && replyTarget && (
-              <div className="reply-indicator">
-                <span className="reply-dot" />
-                your next send will post as a real reply to{" "}
-                <a
-                  href={replyTargetLink(replyTarget)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="reply-link"
-                >
-                  this post ↗
-                </a>
-              </div>
-            )}
-            {postStatus.kind === "posting" && (
-              <div className="post-status posting">posting to bluesky…</div>
-            )}
-            {postStatus.kind === "posted" && (
-              <div className="post-status posted">
-                posted.{" "}
-                <a
-                  href={bskyAppUrlFromUri(postStatus.uri)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                >
-                  view on bluesky ↗
-                </a>
-              </div>
-            )}
-            {postStatus.kind === "error" && (
-              <div className="post-status error">
-                failed to post: {postStatus.message}
-              </div>
-            )}
-            <div className="message-input-area">
-              <input
-                ref={inputRef}
-                type="text"
-                value={inputText}
-                onChange={(e) => setInputText(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSend()}
-                placeholder={
-                  canPostToBluesky ? "reply to this post..." : placeholder
-                }
-                className="message-input"
-              />
+          {(repliedCount > 0 || showRepliedOnly) && (
+            <div className="sidebar-filters">
               <button
-                className="send-button"
-                onClick={handleSend}
-                disabled={!inputText.trim()}
+                className={`filter-pill ${showRepliedOnly ? "active" : ""}`}
+                onClick={() => setShowRepliedOnly((v) => !v)}
+                title="Show only conversations you've replied to"
               >
-                &uarr;
+                {showRepliedOnly ? "← show all" : `★ replied (${repliedCount})`}
               </button>
             </div>
-          </>
-        ) : (
-          <div className="messages-empty-state">
-            <p>
-              {mode === "accounts"
-                ? "No account has posted yet. The firehose will fill this up shortly."
-                : "No conversation has formed yet. Group chats appear once a thread has at least two participants."}
-            </p>
+          )}
+
+          <div className="conversation-list">
+            {sortedConvos.length === 0 && (
+              <div className="empty-list">
+                {mode === "accounts"
+                  ? "Waiting for DMs to come in..."
+                  : "Waiting for conversations to form..."}
+              </div>
+            )}
+            {sortedConvos.map((conv) => (
+              <div
+                key={conv.id}
+                className={`conversation-item ${conv.id === currentActiveId ? "active" : ""} ${conv.userReplied ? "replied" : ""}`}
+                onClick={() => handleSelectConversation(conv.id)}
+              >
+                <ConversationAvatar conv={conv} />
+                <div className="conversation-preview">
+                  <div className="conversation-top">
+                    <span className="contact-name">
+                      {conv.userReplied && (
+                        <span className="replied-star" title="You replied">
+                          ★{" "}
+                        </span>
+                      )}
+                      {conv.displayName}
+                    </span>
+                    {conv.messages.length > 0 && (
+                      <span className="message-time">
+                        {dayjs(
+                          conv.messages[conv.messages.length - 1].timestamp,
+                        ).format("h:mm A")}
+                      </span>
+                    )}
+                  </div>
+                  {conv.subtitle && (
+                    <div className="conversation-subtitle">{conv.subtitle}</div>
+                  )}
+                  <div className="conversation-bottom">
+                    <span className="last-message">
+                      {conv.isTyping ? (
+                        <em className="typing-preview">typing...</em>
+                      ) : conv.messages.length > 0 ? (
+                        renderPreview(conv)
+                      ) : null}
+                    </span>
+                    {conv.unreadCount > 0 && (
+                      <span className="unread-badge">{conv.unreadCount}</span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
-        )}
-      </div>
+
+          <div className="keyboard-hints">
+            <span>
+              <kbd>↑</kbd>
+              <kbd>↓</kbd> navigate
+            </span>
+            <span>
+              <kbd>↵</kbd> send
+            </span>
+            <span>
+              <kbd>esc</kbd> unfocus
+            </span>
+          </div>
+        </div>
+
+        <div className="messages-main">
+          {activeConversation ? (
+            <>
+              <div className="chat-header">
+                <button
+                  type="button"
+                  className="chat-back-button"
+                  onClick={() => setCurrentActiveId(null)}
+                  aria-label="Back to conversations"
+                >
+                  &lsaquo;
+                </button>
+                {(() => {
+                  const profileUrl = conversationBskyUrl(activeConversation);
+                  const inner = (
+                    <>
+                      <ConversationAvatar conv={activeConversation} small />
+                      <div className="chat-header-text">
+                        <span className="chat-contact-name">
+                          {activeConversation.displayName}
+                        </span>
+                        {activeConversation.subtitle && (
+                          <span className="chat-subtitle">
+                            {activeConversation.subtitle}
+                          </span>
+                        )}
+                      </div>
+                    </>
+                  );
+                  return profileUrl ? (
+                    <a
+                      className="chat-header-link"
+                      href={profileUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      title={
+                        activeConversation.kind === "accounts"
+                          ? "Open profile on Bluesky"
+                          : "Open thread on Bluesky"
+                      }
+                    >
+                      {inner}
+                    </a>
+                  ) : (
+                    inner
+                  );
+                })()}
+              </div>
+
+              <div
+                className="messages-body"
+                onClick={() => setShowTapback(null)}
+              >
+                <div className="messages-date-header">Today</div>
+                {activeConversation.messages.map((msg, i) => {
+                  const prev = activeConversation.messages[i - 1];
+                  const showTs =
+                    !prev || msg.timestamp - prev.timestamp > 300000;
+                  // Show author name above bubble when:
+                  // - Groups mode: always for incoming from different authors
+                  // - Accounts mode: when the message is from someone OTHER than
+                  //   the account this conversation belongs to (thread context)
+                  const isThirdParty =
+                    activeConversation.kind === "accounts" &&
+                    msg.authorDid &&
+                    msg.authorDid !== activeConversation.id;
+                  const showAuthorLabel =
+                    msg.fromContact &&
+                    msg.authorName &&
+                    (activeConversation.kind === "groups" || isThirdParty) &&
+                    (!prev ||
+                      prev.authorDid !== msg.authorDid ||
+                      !prev.fromContact);
+                  return (
+                    <div key={msg.id}>
+                      {showTs && i > 0 && (
+                        <div className="message-timestamp">
+                          {dayjs(msg.timestamp).format("h:mm A")}
+                        </div>
+                      )}
+                      {showAuthorLabel && (
+                        <div
+                          className="author-label"
+                          style={{ color: msg.authorColor }}
+                        >
+                          {msg.authorName}
+                        </div>
+                      )}
+                      <div
+                        className={`message-row ${msg.fromContact ? "incoming" : "outgoing"}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setShowTapback(
+                            showTapback === msg.id ? null : msg.id,
+                          );
+                        }}
+                      >
+                        {(msg.text || !msg.embed) && (
+                          <div
+                            className={`message-bubble ${msg.fromContact ? "incoming" : "outgoing"}`}
+                          >
+                            <span className="message-text">{msg.text}</span>
+                            {!msg.embed && msg.reaction && (
+                              <span className="message-reaction">
+                                {msg.reaction}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {msg.embed && (
+                          <div className="message-embed">
+                            <MessageEmbedView embed={msg.embed} />
+                            {msg.reaction && (
+                              <span className="message-reaction">
+                                {msg.reaction}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        {msg.fromContact && msg.sourceDid && msg.sourceRkey && (
+                          <a
+                            className="source-link"
+                            href={`https://bsky.app/profile/${msg.sourceDid}/post/${msg.sourceRkey}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            title="View original post on Bluesky"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            ↗
+                          </a>
+                        )}
+                        {showTapback === msg.id && (
+                          <div className="tapback-menu">
+                            {TAPBACK_REACTIONS.map((r) => (
+                              <button
+                                key={r}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleTapback(msg.id, r);
+                                }}
+                              >
+                                {r}
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+                {activeConversation.isTyping && (
+                  <div className="message-row incoming">
+                    <div className="typing-indicator">
+                      <span />
+                      <span />
+                      <span />
+                    </div>
+                  </div>
+                )}
+                <div ref={messagesEndRef} />
+              </div>
+
+              {canPostToBluesky && replyTarget && (
+                <div className="reply-indicator">
+                  <span className="reply-dot" />
+                  your next send will post as a real reply to{" "}
+                  <a
+                    href={replyTargetLink(replyTarget)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="reply-link"
+                  >
+                    this post ↗
+                  </a>
+                </div>
+              )}
+              {postStatus.kind === "posting" && (
+                <div className="post-status posting">posting to bluesky…</div>
+              )}
+              {postStatus.kind === "posted" && (
+                <div className="post-status posted">
+                  posted.{" "}
+                  <a
+                    href={bskyAppUrlFromUri(postStatus.uri)}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                  >
+                    view on bluesky ↗
+                  </a>
+                </div>
+              )}
+              {postStatus.kind === "error" && (
+                <div className="post-status error">
+                  failed to post: {postStatus.message}
+                </div>
+              )}
+              <div className="message-input-area">
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={inputText}
+                  onChange={(e) => setInputText(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleSend()}
+                  placeholder={
+                    canPostToBluesky ? "reply to this post..." : placeholder
+                  }
+                  className="message-input"
+                />
+                <button
+                  className="send-button"
+                  onClick={handleSend}
+                  disabled={!inputText.trim()}
+                >
+                  &uarr;
+                </button>
+              </div>
+            </>
+          ) : (
+            <div className="messages-empty-state">
+              <p>
+                {mode === "accounts"
+                  ? "No DMs yet. The firehose will fill this up shortly."
+                  : "No conversation has formed yet. Group chats appear once a thread has at least two participants."}
+              </p>
+            </div>
+          )}
+        </div>
+      </motion.div>
     </div>
   );
 }
@@ -1651,6 +1932,8 @@ function renderPreview(conv: Conversation) {
     snippet = `\ud83d\udcf7 ${n} ${n === 1 ? "Image" : "Images"}`;
   } else if (last.embed?.kind === "external") {
     snippet = "\ud83d\udd17 Link";
+  } else if (last.embed?.kind === "quote") {
+    snippet = "\ud83d\udcac Quoted post";
   } else {
     snippet = "";
   }

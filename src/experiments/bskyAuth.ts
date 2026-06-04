@@ -244,12 +244,13 @@ export async function postReply(
   if (!agent || !session) {
     throw new Error("not signed in");
   }
-  // TODO: optionally append a "sent from HAH.spencer.place" attribution to the
-  // text (likely behind a composer toggle, off by default — it publishes
-  // publicly on every reply and consumes characters). Decide UX before adding.
+  // Append a short attribution so the recipient knows the reply came from a
+  // person using the HAH experiment, not a bot. Kept on its own line and short
+  // to spend as few characters as possible.
+  const body = `${text}\n\nsent via hah.spencer.place/messages`;
   const record: Record<string, unknown> = {
     $type: "app.bsky.feed.post",
-    text,
+    text: body,
     createdAt: new Date().toISOString(),
   };
   if (reply) {
