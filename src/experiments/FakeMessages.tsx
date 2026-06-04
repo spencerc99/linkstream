@@ -1184,9 +1184,12 @@ export function FakeMessages() {
   const handleSelectConversation = (id: string) => {
     setCurrentActiveId(id);
     setShowTapback(null);
-    // Focus the composer so you can immediately type after navigating
-    // (whether by click or arrow keys).
-    requestAnimationFrame(() => inputRef.current?.focus());
+    // Focus the composer so you can immediately type after navigating (desktop
+    // keyboard flow). On mobile we skip it: auto-popping the on-screen keyboard
+    // mid-slide causes a layout shift, and you usually want to read first.
+    if (!isMobile) {
+      requestAnimationFrame(() => inputRef.current?.focus());
+    }
     setCurrentConvos((prev) => {
       const next = new Map(prev);
       const conv = next.get(id);
